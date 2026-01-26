@@ -249,7 +249,7 @@ def build_metadata_str(entry: dict) -> str:
 def refresh_all_slots(history: list):
     """Refresh all 5 output slots based on history state.
 
-    Returns updates for: [slot0_container, slot0_filename, slot0_metadata, slot0_audio, ...]
+    Returns updates for: [slot0_container, slot0_filename, slot0_audio, ...]
     """
     updates = []
     for i in range(5):
@@ -257,14 +257,12 @@ def refresh_all_slots(history: list):
             entry = history[i]
             updates.append(gr.update(visible=True))  # container
             updates.append(gr.update(value=entry["filename"]))  # filename
-            updates.append(gr.update(value=build_metadata_str(entry)))  # metadata
-            updates.append(gr.update(value=entry["path"]))  # audio
+            updates.append(gr.update(value=entry["path"], label=build_metadata_str(entry)))  # audio with metadata label
         else:
             # Slot 0 stays visible but empty, others hide
             updates.append(gr.update(visible=(i == 0)))  # container
             updates.append(gr.update(value=""))  # filename
-            updates.append(gr.update(value=""))  # metadata
-            updates.append(gr.update(value=None))  # audio
+            updates.append(gr.update(value=None, label=""))  # audio
     return updates
 
 
@@ -274,8 +272,7 @@ def refresh_slots_for_shift(history: list):
     # Slot 0: will show "Generating..." state
     updates.append(gr.update(visible=True))  # container
     updates.append(gr.update(value=""))  # filename cleared
-    updates.append(gr.update(value="Generating..."))  # metadata shows status
-    updates.append(gr.update(value=None))  # audio cleared
+    updates.append(gr.update(value=None, label="Generating..."))  # audio with status label
 
     # Slots 1-4: show current history items (which will become previous)
     for i in range(4):
@@ -283,13 +280,11 @@ def refresh_slots_for_shift(history: list):
             entry = history[i]
             updates.append(gr.update(visible=True))  # container
             updates.append(gr.update(value=entry["filename"]))  # filename
-            updates.append(gr.update(value=build_metadata_str(entry)))  # metadata
-            updates.append(gr.update(value=entry["path"]))  # audio
+            updates.append(gr.update(value=entry["path"], label=build_metadata_str(entry)))  # audio with metadata label
         else:
             updates.append(gr.update(visible=False))  # container
             updates.append(gr.update(value=""))  # filename
-            updates.append(gr.update(value=""))  # metadata
-            updates.append(gr.update(value=None))  # audio
+            updates.append(gr.update(value=None, label=""))  # audio
     return updates
 
 
@@ -299,7 +294,8 @@ CSS = """
 .preset-btn { min-width: 0 !important; padding: 4px 8px !important; font-size: 12px !important; }
 .history-section { border-left: 2px solid #444; padding-left: 16px; }
 .generate-btn { margin-top: 8px !important; }
-.metadata-display input { font-size: 12px !important; color: #888 !important; }
+.filename-row .progress-bar, .filename-row .progress-text, .filename-row .eta-bar,
+.filename-row .wrap, .filename-row .generating { display: none !important; }
 """
 
 with gr.Blocks(title="Qwen3-TTS") as app:
@@ -425,7 +421,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             for i in range(5):
                 is_current = i == 0
                 with gr.Group(visible=is_current) as container:
-                    with gr.Row():
+                    with gr.Row(elem_classes=["filename-row"]):
                         filename_box = gr.Textbox(
                             label="",
                             placeholder="Generated Audio" if is_current else f"Previous {i}",
@@ -433,21 +429,12 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                             container=False,
                         )
                         delete_btn = gr.Button("🗑️", size="sm", scale=0, min_width=40)
-                    metadata_text = gr.Textbox(
-                        label="",
-                        value="",
-                        interactive=False,
-                        container=False,
-                        elem_classes=["metadata-display"],
-                    )
                     audio_player = gr.Audio(
                         type="filepath",
-                        label=None,
-                        show_label=False,
+                        label="",
                     )
                 output_slots.append({
                     "filename": filename_box,
-                    "metadata": metadata_text,
                     "delete": delete_btn,
                     "audio": audio_player,
                     "container": container,
@@ -457,7 +444,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
     # Build flat lists for outputs
     all_slot_outputs = []
     for slot in output_slots:
-        all_slot_outputs.extend([slot["container"], slot["filename"], slot["metadata"], slot["audio"]])
+        all_slot_outputs.extend([slot["container"], slot["filename"], slot["audio"]])
 
     # Event handlers
     def shift_history(history):
@@ -471,8 +458,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             new_history,
             gr.update(visible=True),
             gr.update(value=new_history[0]["filename"]),
-            gr.update(value=build_metadata_str(new_history[0])),
-            gr.update(value=path),
+            gr.update(value=path, label=build_metadata_str(new_history[0])),
         ]
 
     def do_generate_clone(text, saved_voice, ref_audio, ref_text, temp, model, history):
@@ -481,8 +467,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             new_history,
             gr.update(visible=True),
             gr.update(value=new_history[0]["filename"]),
-            gr.update(value=build_metadata_str(new_history[0])),
-            gr.update(value=path),
+            gr.update(value=path, label=build_metadata_str(new_history[0])),
         ]
 
     def make_rename_handler(slot_index):
@@ -513,7 +498,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         return gr.update(choices=get_saved_voice_choices())
 
     # Slot 0 outputs (current) for generate
-    slot0_outputs = [output_slots[0]["container"], output_slots[0]["filename"], output_slots[0]["metadata"], output_slots[0]["audio"]]
+    slot0_outputs = [output_slots[0]["container"], output_slots[0]["filename"], output_slots[0]["audio"]]
 
     # Chain: first shift history (instant), then generate (slow, only updates slot 0)
     preset_btn.click(
