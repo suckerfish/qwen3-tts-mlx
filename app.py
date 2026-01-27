@@ -319,6 +319,10 @@ CSS = """
 .generate-btn { margin-top: 8px !important; }
 .filename-row .progress-bar, .filename-row .progress-text, .filename-row .eta-bar,
 .filename-row .wrap, .filename-row .generating { display: none !important; }
+.icon-btn { min-width: 36px !important; max-width: 36px !important; min-height: 42px !important; padding: 4px !important; font-size: 20px !important; }
+.icon-btn-divider { border-right: 1px solid #666 !important; }
+.filename-row { align-items: stretch !important; }
+.filename-row > div { display: flex !important; align-items: stretch !important; }
 """
 
 with gr.Blocks(title="Qwen3-TTS") as app:
@@ -392,27 +396,26 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                         interactive=True,
                     )
 
-                    clone_ref_audio = gr.Audio(
-                        label="Reference audio",
-                        type="filepath",
-                        sources=["upload"],
-                    )
-
-                    clone_ref_text = gr.Textbox(
-                        label="Reference transcript",
-                        placeholder="Words spoken in reference audio...",
-                        lines=2,
-                        elem_classes=["compact-input"],
-                    )
-
-                    with gr.Row():
-                        save_voice_name = gr.Textbox(
-                            label="Save as",
-                            placeholder="Voice name...",
-                            scale=2,
+                    with gr.Accordion("Create New Voice", open=False):
+                        clone_ref_audio = gr.Audio(
+                            label="Reference audio",
+                            type="filepath",
+                            sources=["upload"],
+                        )
+                        clone_ref_text = gr.Textbox(
+                            label="Transcript",
+                            placeholder="Words spoken in reference audio...",
+                            lines=2,
                             elem_classes=["compact-input"],
                         )
-                        save_voice_btn = gr.Button("Save", size="sm", scale=1)
+                        with gr.Row():
+                            save_voice_name = gr.Textbox(
+                                label="Voice name",
+                                placeholder="Name for this voice...",
+                                scale=3,
+                                elem_classes=["compact-input"],
+                            )
+                            save_voice_btn = gr.Button("Save", size="sm", scale=1)
 
                     clone_model = gr.Dropdown(
                         choices=list(CLONE_MODELS.keys()),
@@ -445,13 +448,15 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                             scale=4,
                             container=False,
                         )
-                        delete_btn = gr.Button("🗑️", size="sm", scale=0, min_width=40)
+                        rewind_btn = gr.Button("⏮", size="sm", scale=0, elem_classes=["icon-btn", "icon-btn-divider"])
+                        delete_btn = gr.Button("🗑️", size="sm", scale=0, elem_classes=["icon-btn"])
                     audio_player = gr.Audio(
                         type="filepath",
                         label="",
                     )
                 output_slots.append({
                     "filename": filename_box,
+                    "rewind": rewind_btn,
                     "delete": delete_btn,
                     "audio": audio_player,
                     "container": container,
@@ -548,7 +553,12 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         js=reset_audio_js,
     )
 
-    # Wire up rename (on blur/submit) and delete for each slot
+    # Wire up rename (on blur/submit), rewind, and delete for each slot
+    rewind_js = """(e) => {
+        let el = e.target;
+        while (el && !el.querySelector('audio')) el = el.parentElement;
+        if (el) { const a = el.querySelector('audio'); a.currentTime = 0; a.pause(); }
+    }"""
     for i, slot in enumerate(output_slots):
         slot["filename"].submit(
             fn=make_rename_handler(i),
@@ -560,6 +570,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             inputs=[slot["filename"], history_state],
             outputs=[history_state] + all_slot_outputs,
         )
+        slot["rewind"].click(fn=None, js=rewind_js)
         slot["delete"].click(
             fn=make_delete_handler(i),
             inputs=[history_state],

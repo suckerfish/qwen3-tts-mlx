@@ -175,9 +175,11 @@ uv run python app.py
 - **0.6B-Base**: Faster, smaller model
 - Supports M4A, MP3, WAV audio files via librosa
 - Save voices for reuse - stored in `saved_voices/`
+- Create new voices via the "Create New Voice" accordion
 
 ### Output Management
 - Edit filename textbox directly to rename files on disk
+- Click ⏮ to rewind audio to beginning
 - Click 🗑️ to delete (confirms deletion from disk)
 - Files saved as `{voice}_{timestamp}.wav` or `clone_{timestamp}.wav`
 
