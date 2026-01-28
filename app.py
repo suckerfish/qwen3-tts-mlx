@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
+from huggingface_hub import scan_cache_dir, snapshot_download
 import librosa
 import mlx.core as mx
 import numpy as np
@@ -30,13 +31,28 @@ INSTRUCT_PRESETS = [
     "whispered, secretive tone",
 ]
 
-PRESET_MODELS = {
+ALL_MODELS = {
     "1.7B-CustomVoice": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
-}
-CLONE_MODELS = {
+    "1.7B-VoiceDesign": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
     "1.7B-Base": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
     "0.6B-Base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
 }
+
+PRESET_MODELS = {"1.7B-CustomVoice": ALL_MODELS["1.7B-CustomVoice"]}
+DESIGN_MODELS = {"1.7B-VoiceDesign": ALL_MODELS["1.7B-VoiceDesign"]}
+CLONE_MODELS = {k: v for k, v in ALL_MODELS.items() if "Base" in k}
+
+VOICE_DESIGN_PRESETS = [
+    "wise elderly mentor, warm and reassuring, measured pace",
+    "energetic young narrator, bright and enthusiastic",
+    "calm professional news anchor, clear and authoritative",
+    "friendly storyteller, expressive with gentle warmth",
+]
+
+LANGUAGES = [
+    "Auto", "Chinese", "English", "Japanese", "Korean",
+    "German", "French", "Russian", "Portuguese", "Spanish", "Italian",
+]
 
 OUTPUTS_DIR = Path("outputs")
 SAVED_VOICES_DIR = Path("saved_voices")
@@ -53,17 +69,68 @@ def get_model(model_path: str):
     return models[model_path]
 
 
+def get_cached_models() -> dict[str, tuple[bool, int]]:
+    """Return dict of {repo_id: (is_cached, size_bytes)}."""
+    cache_info = scan_cache_dir()
+    cached = {}
+    for repo in cache_info.repos:
+        cached[repo.repo_id] = (True, repo.size_on_disk)
+    return cached
+
+
+def is_model_downloaded(repo_id: str) -> bool:
+    """Check if a specific model is in cache."""
+    cached = get_cached_models()
+    return repo_id in cached
+
+
+def get_model_status() -> list[dict]:
+    """Get status of all models for UI display."""
+    cached = get_cached_models()
+    statuses = []
+    for name, repo_id in ALL_MODELS.items():
+        is_cached = repo_id in cached
+        size = cached.get(repo_id, (False, 0))[1] if is_cached else 0
+        statuses.append({
+            "name": name,
+            "repo_id": repo_id,
+            "downloaded": is_cached,
+            "size": size,
+        })
+    return statuses
+
+
+def download_model(repo_id: str, progress=gr.Progress()) -> str:
+    """Download model with Gradio progress tracking."""
+    progress(0, desc="Starting download...")
+    snapshot_download(repo_id, allow_patterns=["*.json", "*.safetensors", "*.py", "*.txt", "*.tiktoken"])
+    return f"Downloaded {repo_id}"
+
+
+def delete_model(repo_id: str) -> str:
+    """Delete model from cache."""
+    cache_info = scan_cache_dir()
+    for repo in cache_info.repos:
+        if repo.repo_id == repo_id:
+            revision_hashes = [rev.commit_hash for rev in repo.revisions]
+            strategy = cache_info.delete_revisions(*revision_hashes)
+            strategy.execute()
+            return f"Deleted {repo_id}"
+    return f"Model {repo_id} not found in cache"
+
+
 def load_saved_voices() -> dict:
     """Scan saved_voices/ on startup and return dict of saved voices."""
     voices = {}
     for voice_dir in SAVED_VOICES_DIR.iterdir():
         if voice_dir.is_dir():
-            audio_path = voice_dir / "audio.wav"
             transcript_path = voice_dir / "transcript.txt"
             metadata_path = voice_dir / "metadata.json"
-            if audio_path.exists() and transcript_path.exists():
+            # Find audio file with any extension
+            audio_files = list(voice_dir.glob("audio.*"))
+            if audio_files and transcript_path.exists():
                 voices[voice_dir.name] = {
-                    "audio": str(audio_path),
+                    "audio": str(audio_files[0]),
                     "transcript": transcript_path.read_text().strip(),
                     "metadata": json.loads(metadata_path.read_text()) if metadata_path.exists() else {},
                 }
@@ -87,8 +154,9 @@ def save_cloned_voice(audio_path: str, transcript: str, name: str) -> str:
 
     voice_dir.mkdir(parents=True)
 
-    # Copy audio file (format conversion handled at load time)
-    shutil.copy(audio_path, voice_dir / "audio.wav")
+    # Copy audio file preserving original format
+    original_ext = Path(audio_path).suffix or ".wav"
+    shutil.copy(audio_path, voice_dir / f"audio{original_ext}")
 
     (voice_dir / "transcript.txt").write_text(transcript.strip())
     (voice_dir / "metadata.json").write_text(json.dumps({
@@ -96,7 +164,38 @@ def save_cloned_voice(audio_path: str, transcript: str, name: str) -> str:
         "created": datetime.now().isoformat(),
     }))
 
-    return f"Voice '{safe_name}' saved"
+    return safe_name
+
+
+def save_designed_voice(audio_path: str, transcript: str, instruct: str, name: str) -> str:
+    """Save a designed voice for reuse in voice cloning."""
+    if not name.strip():
+        raise gr.Error("Please enter a name for the voice")
+    if not audio_path:
+        raise gr.Error("Please generate audio first")
+    if not transcript.strip():
+        raise gr.Error("No transcript available")
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name.strip())
+    voice_dir = SAVED_VOICES_DIR / safe_name
+
+    if voice_dir.exists():
+        raise gr.Error(f"Voice '{safe_name}' already exists")
+
+    voice_dir.mkdir(parents=True)
+
+    # Copy audio file
+    shutil.copy(audio_path, voice_dir / "audio.wav")
+
+    (voice_dir / "transcript.txt").write_text(transcript.strip())
+    (voice_dir / "metadata.json").write_text(json.dumps({
+        "name": name.strip(),
+        "created": datetime.now().isoformat(),
+        "voice_description": instruct.strip() if instruct else "",
+        "type": "designed",
+    }))
+
+    return safe_name
 
 
 def save_generation(audio: np.ndarray, voice: str, temp: float, instruct: str, is_clone: bool = False) -> dict:
@@ -127,8 +226,15 @@ def rename_generation(history: list, index: int, new_name: str) -> list:
     entry = history[index]
     old_path = Path(entry["path"])
 
+    # Strip any path components to prevent path traversal
+    new_name = Path(new_name).name
+
     if not new_name.endswith(".wav"):
         new_name = new_name + ".wav"
+
+    # Reject invalid names
+    if not new_name or new_name == ".wav":
+        raise gr.Error("Invalid filename")
 
     new_path = old_path.parent / new_name
 
@@ -178,8 +284,11 @@ def generate_preset(
     if not text.strip():
         raise gr.Error("Please enter text to synthesize")
 
-    temp = validate_temperature(temp_str)
     model_path = PRESET_MODELS[model_name]
+    if not is_model_downloaded(model_path):
+        raise gr.Error(f"Model not downloaded. Go to Models tab to download '{model_name}'")
+
+    temp = validate_temperature(temp_str)
     model = get_model(model_path)
 
     # Extract voice name without description
@@ -192,8 +301,44 @@ def generate_preset(
         temperature=temp,
     ))
 
+    if not results:
+        raise gr.Error("Generation failed - no audio produced")
+
     audio = np.array(results[0].audio)
     metadata = save_generation(audio, voice_name, temp, instruct.strip())
+
+    new_history = [metadata] + history
+    return metadata["path"], new_history
+
+
+def generate_design(
+    text: str, instruct: str, language: str, temp_str: str, history: list
+) -> tuple:
+    """Generate audio using VoiceDesign model."""
+    if not text.strip():
+        raise gr.Error("Please enter text to synthesize")
+    if not instruct.strip():
+        raise gr.Error("Please enter a voice description")
+
+    model_path = DESIGN_MODELS["1.7B-VoiceDesign"]
+    if not is_model_downloaded(model_path):
+        raise gr.Error("Model not downloaded. Go to Models tab to download '1.7B-VoiceDesign'")
+
+    temp = validate_temperature(temp_str)
+    model = get_model(model_path)
+
+    results = list(model.generate(
+        text=text,
+        instruct=instruct.strip(),
+        lang_code=language.lower(),
+        temperature=temp,
+    ))
+
+    if not results:
+        raise gr.Error("Generation failed - no audio produced")
+
+    audio = np.array(results[0].audio)
+    metadata = save_generation(audio, "designed", temp, instruct.strip())
 
     new_history = [metadata] + history
     return metadata["path"], new_history
@@ -211,6 +356,10 @@ def generate_clone(
     """Generate audio using voice cloning."""
     if not text.strip():
         raise gr.Error("Please enter text to synthesize")
+
+    model_path = CLONE_MODELS[model_name]
+    if not is_model_downloaded(model_path):
+        raise gr.Error(f"Model not downloaded. Go to Models tab to download '{model_name}'")
 
     saved_voices = load_saved_voices()
 
@@ -231,7 +380,6 @@ def generate_clone(
         voice_name = "custom"
 
     temp = validate_temperature(temp_str)
-    model_path = CLONE_MODELS[model_name]
     model = get_model(model_path)
 
     # Load audio with librosa (supports M4A, MP3, etc.) and convert to mlx array
@@ -244,6 +392,9 @@ def generate_clone(
         ref_text=actual_text,
         temperature=temp,
     ))
+
+    if not results:
+        raise gr.Error("Generation failed - no audio produced")
 
     audio = np.array(results[0].audio)
     metadata = save_generation(audio, voice_name, temp, "", is_clone=True)
@@ -380,6 +531,54 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
                     preset_btn = gr.Button("Generate", variant="primary", elem_classes=["generate-btn"])
 
+                # VOICE DESIGN TAB
+                with gr.Tab("Voice Design"):
+                    design_text = gr.Textbox(
+                        label="Text",
+                        placeholder="Enter text to synthesize...",
+                        lines=4,
+                        elem_classes=["compact-input"],
+                    )
+
+                    gr.Markdown("**Voice description presets**")
+                    with gr.Row():
+                        design_preset_btns = []
+                        for preset in VOICE_DESIGN_PRESETS:
+                            btn = gr.Button(preset, size="sm", elem_classes=["preset-btn"])
+                            design_preset_btns.append(btn)
+
+                    design_instruct = gr.Textbox(
+                        label="Voice Description",
+                        placeholder="e.g., deep male voice with British accent, calm and authoritative...",
+                        lines=3,
+                        elem_classes=["compact-input"],
+                    )
+
+                    for btn, preset in zip(design_preset_btns, VOICE_DESIGN_PRESETS):
+                        btn.click(fn=lambda p=preset: p, outputs=design_instruct)
+
+                    design_language = gr.Dropdown(
+                        choices=LANGUAGES,
+                        value="Auto",
+                        label="Language",
+                    )
+
+                    design_temp = gr.Textbox(
+                        label="Temperature (0.0 - 2.0)",
+                        value="0.9",
+                        elem_classes=["compact-input"],
+                    )
+
+                    design_btn = gr.Button("Generate", variant="primary", elem_classes=["generate-btn"])
+
+                    with gr.Accordion("Save as Voice", open=False):
+                        design_save_name = gr.Textbox(
+                            label="Voice name",
+                            placeholder="Name for this voice...",
+                            elem_classes=["compact-input"],
+                        )
+                        design_save_btn = gr.Button("Save Voice", size="sm")
+
                 # VOICE CLONING TAB
                 with gr.Tab("Voice Cloning"):
                     clone_text = gr.Textbox(
@@ -430,6 +629,28 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                     )
 
                     clone_btn = gr.Button("Generate", variant="primary", elem_classes=["generate-btn"])
+
+                # MODELS TAB
+                with gr.Tab("Models"):
+                    gr.Markdown("### Model Management")
+                    gr.Markdown("Download models before use. Models are stored in `~/.cache/huggingface/hub/`")
+
+                    model_status_display = gr.Dataframe(
+                        headers=["Model", "Status", "Size"],
+                        label="Available Models",
+                        interactive=False,
+                    )
+
+                    with gr.Row():
+                        model_selector = gr.Dropdown(
+                            choices=list(ALL_MODELS.keys()),
+                            label="Select Model",
+                        )
+                        download_btn = gr.Button("Download", variant="primary")
+                        delete_btn_models = gr.Button("Delete", variant="stop")
+
+                    model_output = gr.Textbox(label="Status", interactive=False)
+                    refresh_btn = gr.Button("Refresh Status")
 
         # RIGHT COLUMN - Output
         with gr.Column(scale=1, elem_classes=["history-section"]):
@@ -492,6 +713,15 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             gr.update(value=path, label=build_metadata_str(new_history[0])),
         ]
 
+    def do_generate_design(text, instruct, language, temp, history):
+        path, new_history = generate_design(text, instruct, language, temp, history)
+        return [
+            new_history,
+            gr.update(visible=True),
+            gr.update(value=new_history[0]["filename"]),
+            gr.update(value=path, label=build_metadata_str(new_history[0])),
+        ]
+
     def make_rename_handler(slot_index):
         def do_rename(new_name, history):
             if slot_index >= len(history):
@@ -512,10 +742,19 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         return do_delete
 
     def do_save_voice(audio, transcript, name):
-        msg = save_cloned_voice(audio, transcript, name)
+        safe_name = save_cloned_voice(audio, transcript, name)
         new_choices = get_saved_voice_choices()
-        gr.Info(msg)
-        return gr.update(choices=new_choices, value=name.strip())
+        gr.Info(f"Voice '{safe_name}' saved")
+        return gr.update(choices=new_choices, value=safe_name)
+
+    def do_save_designed_voice(history, text, instruct, name):
+        if not history:
+            raise gr.Error("Please generate audio first")
+        audio_path = history[0]["path"]
+        safe_name = save_designed_voice(audio_path, text, instruct, name)
+        new_choices = get_saved_voice_choices()
+        gr.Info(f"Voice '{safe_name}' saved")
+        return gr.update(choices=new_choices, value=safe_name)
 
     def do_refresh_voices():
         return gr.update(choices=get_saved_voice_choices())
@@ -553,6 +792,19 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         js=reset_audio_js,
     )
 
+    design_btn.click(
+        fn=shift_history,
+        inputs=[history_state],
+        outputs=all_slot_outputs,
+    ).then(
+        fn=do_generate_design,
+        inputs=[design_text, design_instruct, design_language, design_temp, history_state],
+        outputs=[history_state] + slot0_outputs,
+    ).then(
+        fn=None,
+        js=reset_audio_js,
+    )
+
     # Wire up rename (on blur/submit), rewind, and delete for each slot
     rewind_js = """(e) => {
         let el = e.target;
@@ -582,6 +834,49 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         fn=do_save_voice,
         inputs=[clone_ref_audio, clone_ref_text, save_voice_name],
         outputs=[saved_voice_dropdown],
+    )
+
+    design_save_btn.click(
+        fn=do_save_designed_voice,
+        inputs=[history_state, design_text, design_instruct, design_save_name],
+        outputs=[saved_voice_dropdown],
+    )
+
+    # Model management handlers
+    def refresh_model_status():
+        statuses = get_model_status()
+        data = []
+        for s in statuses:
+            status = "✅ Downloaded" if s["downloaded"] else "❌ Not downloaded"
+            size = f"{s['size'] / 1e9:.1f} GB" if s["downloaded"] else "—"
+            data.append([s["name"], status, size])
+        return data
+
+    def do_download_model(model_name):
+        if not model_name:
+            return "Please select a model", refresh_model_status()
+        repo_id = ALL_MODELS[model_name]
+        result = download_model(repo_id)
+        return result, refresh_model_status()
+
+    def do_delete_model(model_name):
+        if not model_name:
+            return "Please select a model", refresh_model_status()
+        repo_id = ALL_MODELS[model_name]
+        result = delete_model(repo_id)
+        return result, refresh_model_status()
+
+    refresh_btn.click(fn=refresh_model_status, outputs=[model_status_display])
+    download_btn.click(
+        fn=do_download_model,
+        inputs=[model_selector],
+        outputs=[model_output, model_status_display],
+    )
+    delete_btn_models.click(
+        fn=do_delete_model,
+        inputs=[model_selector],
+        outputs=[model_output, model_status_display],
+        js="() => confirm('Delete this model from cache? You will need to re-download it to use again.')",
     )
 
 if __name__ == "__main__":
