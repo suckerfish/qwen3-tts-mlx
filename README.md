@@ -145,6 +145,8 @@ uv run python app.py
 - **Two-column layout**: Controls on left, output waveforms on right
 - **Preset Voices tab**: 9 built-in voices with descriptions and style presets
 - **Voice Cloning tab**: Clone voices from reference audio (supports M4A, MP3, WAV)
+- **Voice Design tab**: Create custom voices from text descriptions
+- **Models tab**: Download/delete models (click Refresh Status to reveal actions)
 - **Generation history**: Up to 5 recent outputs with waveform playback
 - **Inline management**: Edit filenames directly, delete with confirmation
 - **Metadata display**: Voice, temperature, and instruction shown in audio label

@@ -641,7 +641,9 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                         interactive=False,
                     )
 
-                    with gr.Row():
+                    refresh_btn = gr.Button("Refresh Status", variant="primary")
+
+                    with gr.Row(visible=False) as model_actions_row:
                         model_selector = gr.Dropdown(
                             choices=list(ALL_MODELS.keys()),
                             label="Select Model",
@@ -649,8 +651,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                         download_btn = gr.Button("Download", variant="primary")
                         delete_btn_models = gr.Button("Delete", variant="stop")
 
-                    model_output = gr.Textbox(label="Status", interactive=False)
-                    refresh_btn = gr.Button("Refresh Status")
+                    model_output = gr.Textbox(label="Status", interactive=False, visible=False)
 
         # RIGHT COLUMN - Output
         with gr.Column(scale=1, elem_classes=["history-section"]):
@@ -866,7 +867,10 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         result = delete_model(repo_id)
         return result, refresh_model_status()
 
-    refresh_btn.click(fn=refresh_model_status, outputs=[model_status_display])
+    def refresh_and_show():
+        return refresh_model_status(), gr.update(visible=True), gr.update(visible=True)
+
+    refresh_btn.click(fn=refresh_and_show, outputs=[model_status_display, model_actions_row, model_output])
     download_btn.click(
         fn=do_download_model,
         inputs=[model_selector],
