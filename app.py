@@ -347,8 +347,6 @@ def generate_design(
 def generate_clone(
     text: str,
     saved_voice: str,
-    ref_audio: str,
-    ref_text: str,
     temp_str: str,
     model_name: str,
     history: list,
@@ -356,28 +354,21 @@ def generate_clone(
     """Generate audio using voice cloning."""
     if not text.strip():
         raise gr.Error("Please enter text to synthesize")
+    if not saved_voice:
+        raise gr.Error("Please select a voice")
 
     model_path = CLONE_MODELS[model_name]
     if not is_model_downloaded(model_path):
         raise gr.Error(f"Model not downloaded. Go to Models tab to download '{model_name}'")
 
     saved_voices = load_saved_voices()
-
-    if saved_voice and saved_voice != "-- Upload new --":
-        if saved_voice not in saved_voices:
-            raise gr.Error(f"Saved voice '{saved_voice}' not found")
-        voice_data = saved_voices[saved_voice]
-        actual_audio = voice_data["audio"]
-        actual_text = voice_data["transcript"]
-        voice_name = saved_voice
-    else:
-        if not ref_audio:
-            raise gr.Error("Please upload a reference audio file")
-        if not ref_text.strip():
-            raise gr.Error("Please enter the reference audio transcript")
-        actual_audio = ref_audio
-        actual_text = ref_text.strip()
-        voice_name = "custom"
+    if saved_voice not in saved_voices:
+        raise gr.Error(f"Voice '{saved_voice}' not found. Create a voice first.")
+    
+    voice_data = saved_voices[saved_voice]
+    actual_audio = voice_data["audio"]
+    actual_text = voice_data["transcript"]
+    voice_name = saved_voice
 
     temp = validate_temperature(temp_str)
     model = get_model(model_path)
@@ -406,8 +397,7 @@ def generate_clone(
 def get_saved_voice_choices():
     """Get list of saved voice names for dropdown."""
     voices = load_saved_voices()
-    choices = ["-- Upload new --"] + list(voices.keys())
-    return choices
+    return list(voices.keys())
 
 
 def build_metadata_str(entry: dict) -> str:
@@ -579,6 +569,28 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                         )
                         design_save_btn = gr.Button("Save Voice", size="sm")
 
+                # CLONE VOICE TAB
+                with gr.Tab("Clone Voice"):
+                    gr.Markdown("Save a reference audio clip to use for voice cloning.")
+                    
+                    create_ref_audio = gr.Audio(
+                        label="Reference audio",
+                        type="filepath",
+                        sources=["upload"],
+                    )
+                    create_ref_text = gr.Textbox(
+                        label="Transcript",
+                        placeholder="Words spoken in reference audio...",
+                        lines=3,
+                        elem_classes=["compact-input"],
+                    )
+                    create_voice_name = gr.Textbox(
+                        label="Voice name",
+                        placeholder="Name for this voice...",
+                        elem_classes=["compact-input"],
+                    )
+                    create_voice_btn = gr.Button("Save Voice", variant="primary", elem_classes=["generate-btn"])
+
                 # VOICE CLONING TAB
                 with gr.Tab("Voice Cloning"):
                     clone_text = gr.Textbox(
@@ -590,31 +602,9 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
                     saved_voice_dropdown = gr.Dropdown(
                         choices=get_saved_voice_choices(),
-                        value="-- Upload new --",
-                        label="Saved Voice",
+                        label="Voice",
                         interactive=True,
                     )
-
-                    with gr.Accordion("Create New Voice", open=False):
-                        clone_ref_audio = gr.Audio(
-                            label="Reference audio",
-                            type="filepath",
-                            sources=["upload"],
-                        )
-                        clone_ref_text = gr.Textbox(
-                            label="Transcript",
-                            placeholder="Words spoken in reference audio...",
-                            lines=2,
-                            elem_classes=["compact-input"],
-                        )
-                        with gr.Row():
-                            save_voice_name = gr.Textbox(
-                                label="Voice name",
-                                placeholder="Name for this voice...",
-                                scale=3,
-                                elem_classes=["compact-input"],
-                            )
-                            save_voice_btn = gr.Button("Save", size="sm", scale=1)
 
                     clone_model = gr.Dropdown(
                         choices=list(CLONE_MODELS.keys()),
@@ -705,8 +695,8 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             gr.update(value=path, label=build_metadata_str(new_history[0])),
         ]
 
-    def do_generate_clone(text, saved_voice, ref_audio, ref_text, temp, model, history):
-        path, new_history = generate_clone(text, saved_voice, ref_audio, ref_text, temp, model, history)
+    def do_generate_clone(text, saved_voice, temp, model, history):
+        path, new_history = generate_clone(text, saved_voice, temp, model, history)
         return [
             new_history,
             gr.update(visible=True),
@@ -742,7 +732,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             return [new_history] + refresh_all_slots(new_history)
         return do_delete
 
-    def do_save_voice(audio, transcript, name):
+    def do_create_voice(audio, transcript, name):
         safe_name = save_cloned_voice(audio, transcript, name)
         new_choices = get_saved_voice_choices()
         gr.Info(f"Voice '{safe_name}' saved")
@@ -786,7 +776,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         outputs=all_slot_outputs,
     ).then(
         fn=do_generate_clone,
-        inputs=[clone_text, saved_voice_dropdown, clone_ref_audio, clone_ref_text, clone_temp, clone_model, history_state],
+        inputs=[clone_text, saved_voice_dropdown, clone_temp, clone_model, history_state],
         outputs=[history_state] + slot0_outputs,
     ).then(
         fn=None,
@@ -831,9 +821,9 @@ with gr.Blocks(title="Qwen3-TTS") as app:
             js="() => confirm('Delete this audio file from disk?')",
         )
 
-    save_voice_btn.click(
-        fn=do_save_voice,
-        inputs=[clone_ref_audio, clone_ref_text, save_voice_name],
+    create_voice_btn.click(
+        fn=do_create_voice,
+        inputs=[create_ref_audio, create_ref_text, create_voice_name],
         outputs=[saved_voice_dropdown],
     )
 
