@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115.0",
     "gradio>=5.0.0",
     "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git",
     "soundfile>=0.13.0",
+    "uvicorn>=0.30.0",
 ]

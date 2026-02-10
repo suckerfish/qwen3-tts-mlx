@@ -7,23 +7,26 @@ from pathlib import Path
 
 import gradio as gr
 from huggingface_hub import scan_cache_dir, snapshot_download
-import librosa
-import mlx.core as mx
 import numpy as np
-import soundfile as sf
-from mlx_audio.tts.utils import load_model
 
-VOICES = [
-    "Ryan (dynamic, strong rhythm)",
-    "Aiden (sunny, clear midrange)",
-    "Vivian (bright, slightly edgy)",
-    "Serena (warm, gentle)",
-    "Dylan (youthful Beijing)",
-    "Eric (lively Chengdu, husky)",
-    "Uncle_Fu (seasoned, low mellow)",
-    "Ono_Anna (playful Japanese)",
-    "Sohee (warm Korean)",
-]
+from tts import (
+    VOICES,
+    ALL_MODELS,
+    PRESET_MODELS,
+    DESIGN_MODELS,
+    CLONE_MODELS,
+    LANGUAGES,
+    OUTPUTS_DIR,
+    SAVED_VOICES_DIR,
+    get_model_status,
+    is_model_downloaded,
+    load_saved_voices,
+    generate_preset_audio,
+    generate_design_audio,
+    generate_clone_audio,
+    save_generation,
+)
+
 INSTRUCT_PRESETS = [
     "speak with excitement and enthusiasm",
     "slow deliberate pace with dramatic pauses",
@@ -31,73 +34,12 @@ INSTRUCT_PRESETS = [
     "whispered, secretive tone",
 ]
 
-ALL_MODELS = {
-    "1.7B-CustomVoice": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
-    "1.7B-VoiceDesign": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
-    "1.7B-Base": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
-    "0.6B-Base": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
-}
-
-PRESET_MODELS = {"1.7B-CustomVoice": ALL_MODELS["1.7B-CustomVoice"]}
-DESIGN_MODELS = {"1.7B-VoiceDesign": ALL_MODELS["1.7B-VoiceDesign"]}
-CLONE_MODELS = {k: v for k, v in ALL_MODELS.items() if "Base" in k}
-
 VOICE_DESIGN_PRESETS = [
     "wise elderly mentor, warm and reassuring, measured pace",
     "energetic young narrator, bright and enthusiastic",
     "calm professional news anchor, clear and authoritative",
     "friendly storyteller, expressive with gentle warmth",
 ]
-
-LANGUAGES = [
-    "Auto", "Chinese", "English", "Japanese", "Korean",
-    "German", "French", "Russian", "Portuguese", "Spanish", "Italian",
-]
-
-OUTPUTS_DIR = Path("outputs")
-SAVED_VOICES_DIR = Path("saved_voices")
-OUTPUTS_DIR.mkdir(exist_ok=True)
-SAVED_VOICES_DIR.mkdir(exist_ok=True)
-
-models = {}
-
-
-def get_model(model_path: str):
-    """Lazy load models to save memory."""
-    if model_path not in models:
-        models[model_path] = load_model(model_path)
-    return models[model_path]
-
-
-def get_cached_models() -> dict[str, tuple[bool, int]]:
-    """Return dict of {repo_id: (is_cached, size_bytes)}."""
-    cache_info = scan_cache_dir()
-    cached = {}
-    for repo in cache_info.repos:
-        cached[repo.repo_id] = (True, repo.size_on_disk)
-    return cached
-
-
-def is_model_downloaded(repo_id: str) -> bool:
-    """Check if a specific model is in cache."""
-    cached = get_cached_models()
-    return repo_id in cached
-
-
-def get_model_status() -> list[dict]:
-    """Get status of all models for UI display."""
-    cached = get_cached_models()
-    statuses = []
-    for name, repo_id in ALL_MODELS.items():
-        is_cached = repo_id in cached
-        size = cached.get(repo_id, (False, 0))[1] if is_cached else 0
-        statuses.append({
-            "name": name,
-            "repo_id": repo_id,
-            "downloaded": is_cached,
-            "size": size,
-        })
-    return statuses
 
 
 def download_model(repo_id: str, progress=gr.Progress()) -> str:
@@ -119,24 +61,6 @@ def delete_model(repo_id: str) -> str:
     return f"Model {repo_id} not found in cache"
 
 
-def load_saved_voices() -> dict:
-    """Scan saved_voices/ on startup and return dict of saved voices."""
-    voices = {}
-    for voice_dir in SAVED_VOICES_DIR.iterdir():
-        if voice_dir.is_dir():
-            transcript_path = voice_dir / "transcript.txt"
-            metadata_path = voice_dir / "metadata.json"
-            # Find audio file with any extension
-            audio_files = list(voice_dir.glob("audio.*"))
-            if audio_files and transcript_path.exists():
-                voices[voice_dir.name] = {
-                    "audio": str(audio_files[0]),
-                    "transcript": transcript_path.read_text().strip(),
-                    "metadata": json.loads(metadata_path.read_text()) if metadata_path.exists() else {},
-                }
-    return voices
-
-
 def save_cloned_voice(audio_path: str, transcript: str, name: str) -> str:
     """Persist a cloned voice to saved_voices/."""
     if not name.strip():
@@ -154,7 +78,6 @@ def save_cloned_voice(audio_path: str, transcript: str, name: str) -> str:
 
     voice_dir.mkdir(parents=True)
 
-    # Copy audio file preserving original format
     original_ext = Path(audio_path).suffix or ".wav"
     shutil.copy(audio_path, voice_dir / f"audio{original_ext}")
 
@@ -184,7 +107,6 @@ def save_designed_voice(audio_path: str, transcript: str, instruct: str, name: s
 
     voice_dir.mkdir(parents=True)
 
-    # Copy audio file
     shutil.copy(audio_path, voice_dir / "audio.wav")
 
     (voice_dir / "transcript.txt").write_text(transcript.strip())
@@ -198,26 +120,6 @@ def save_designed_voice(audio_path: str, transcript: str, instruct: str, name: s
     return safe_name
 
 
-def save_generation(audio: np.ndarray, voice: str, temp: float, instruct: str, is_clone: bool = False) -> dict:
-    """Save generated audio to outputs/ and return metadata."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    prefix = "clone" if is_clone else voice
-    filename = f"{prefix}_{timestamp}.wav"
-    filepath = OUTPUTS_DIR / filename
-
-    sf.write(filepath, audio, 24000)
-
-    return {
-        "path": str(filepath),
-        "filename": filename,
-        "voice": voice,
-        "temperature": temp,
-        "instruct": instruct,
-        "timestamp": timestamp,
-        "is_clone": is_clone,
-    }
-
-
 def rename_generation(history: list, index: int, new_name: str) -> list:
     """Rename a file on disk and update history."""
     if index < 0 or index >= len(history):
@@ -226,13 +128,11 @@ def rename_generation(history: list, index: int, new_name: str) -> list:
     entry = history[index]
     old_path = Path(entry["path"])
 
-    # Strip any path components to prevent path traversal
     new_name = Path(new_name).name
 
     if not new_name.endswith(".wav"):
         new_name = new_name + ".wav"
 
-    # Reject invalid names
     if not new_name or new_name == ".wav":
         raise gr.Error("Invalid filename")
 
@@ -264,48 +164,19 @@ def delete_generation(history: list, index: int, delete_file: bool) -> list:
     return history[:index] + history[index + 1:]
 
 
-def validate_temperature(temp_str: str) -> float:
-    """Validate temperature input and return float."""
+def generate_preset(
+    text: str, voice: str, instruct: str, temp_str: str, model_name: str, history: list
+) -> tuple:
+    """Generate audio using preset voice (Gradio wrapper)."""
     try:
         temp = float(temp_str)
     except ValueError:
         raise gr.Error("Temperature must be a number")
 
-    if temp < 0.0 or temp > 2.0:
-        raise gr.Error("Temperature must be between 0.0 and 2.0")
-
-    return temp
-
-
-def generate_preset(
-    text: str, voice: str, instruct: str, temp_str: str, model_name: str, history: list
-) -> tuple:
-    """Generate audio using preset voice."""
-    if not text.strip():
-        raise gr.Error("Please enter text to synthesize")
-
-    model_path = PRESET_MODELS[model_name]
-    if not is_model_downloaded(model_path):
-        raise gr.Error(f"Model not downloaded. Go to Models tab to download '{model_name}'")
-
-    temp = validate_temperature(temp_str)
-    model = get_model(model_path)
-
-    # Extract voice name without description
-    voice_name = voice.split(" (")[0]
-
-    results = list(model.generate(
-        text=text,
-        voice=voice_name,
-        instruct=instruct.strip() or None,
-        temperature=temp,
-    ))
-
-    if not results:
-        raise gr.Error("Generation failed - no audio produced")
-
-    audio = np.array(results[0].audio)
-    metadata = save_generation(audio, voice_name, temp, instruct.strip())
+    try:
+        _audio, metadata = generate_preset_audio(text, voice, instruct, temp, model_name)
+    except (ValueError, RuntimeError) as e:
+        raise gr.Error(str(e))
 
     new_history = [metadata] + history
     return metadata["path"], new_history
@@ -314,31 +185,16 @@ def generate_preset(
 def generate_design(
     text: str, instruct: str, language: str, temp_str: str, history: list
 ) -> tuple:
-    """Generate audio using VoiceDesign model."""
-    if not text.strip():
-        raise gr.Error("Please enter text to synthesize")
-    if not instruct.strip():
-        raise gr.Error("Please enter a voice description")
+    """Generate audio using VoiceDesign model (Gradio wrapper)."""
+    try:
+        temp = float(temp_str)
+    except ValueError:
+        raise gr.Error("Temperature must be a number")
 
-    model_path = DESIGN_MODELS["1.7B-VoiceDesign"]
-    if not is_model_downloaded(model_path):
-        raise gr.Error("Model not downloaded. Go to Models tab to download '1.7B-VoiceDesign'")
-
-    temp = validate_temperature(temp_str)
-    model = get_model(model_path)
-
-    results = list(model.generate(
-        text=text,
-        instruct=instruct.strip(),
-        lang_code=language.lower(),
-        temperature=temp,
-    ))
-
-    if not results:
-        raise gr.Error("Generation failed - no audio produced")
-
-    audio = np.array(results[0].audio)
-    metadata = save_generation(audio, "designed", temp, instruct.strip())
+    try:
+        _audio, metadata = generate_design_audio(text, instruct, language, temp)
+    except (ValueError, RuntimeError) as e:
+        raise gr.Error(str(e))
 
     new_history = [metadata] + history
     return metadata["path"], new_history
@@ -351,44 +207,16 @@ def generate_clone(
     model_name: str,
     history: list,
 ) -> tuple:
-    """Generate audio using voice cloning."""
-    if not text.strip():
-        raise gr.Error("Please enter text to synthesize")
-    if not saved_voice:
-        raise gr.Error("Please select a voice")
+    """Generate audio using voice cloning (Gradio wrapper)."""
+    try:
+        temp = float(temp_str)
+    except ValueError:
+        raise gr.Error("Temperature must be a number")
 
-    model_path = CLONE_MODELS[model_name]
-    if not is_model_downloaded(model_path):
-        raise gr.Error(f"Model not downloaded. Go to Models tab to download '{model_name}'")
-
-    saved_voices = load_saved_voices()
-    if saved_voice not in saved_voices:
-        raise gr.Error(f"Voice '{saved_voice}' not found. Create a voice first.")
-    
-    voice_data = saved_voices[saved_voice]
-    actual_audio = voice_data["audio"]
-    actual_text = voice_data["transcript"]
-    voice_name = saved_voice
-
-    temp = validate_temperature(temp_str)
-    model = get_model(model_path)
-
-    # Load audio with librosa (supports M4A, MP3, etc.) and convert to mlx array
-    audio_np, _ = librosa.load(actual_audio, sr=24000, mono=True)
-    audio_mx = mx.array(audio_np)
-
-    results = list(model.generate(
-        text=text,
-        ref_audio=audio_mx,
-        ref_text=actual_text,
-        temperature=temp,
-    ))
-
-    if not results:
-        raise gr.Error("Generation failed - no audio produced")
-
-    audio = np.array(results[0].audio)
-    metadata = save_generation(audio, voice_name, temp, "", is_clone=True)
+    try:
+        _audio, metadata = generate_clone_audio(text, saved_voice, temp, model_name)
+    except (ValueError, RuntimeError) as e:
+        raise gr.Error(str(e))
 
     new_history = [metadata] + history
     return metadata["path"], new_history
@@ -411,44 +239,38 @@ def build_metadata_str(entry: dict) -> str:
 
 
 def refresh_all_slots(history: list):
-    """Refresh all 5 output slots based on history state.
-
-    Returns updates for: [slot0_container, slot0_filename, slot0_audio, ...]
-    """
+    """Refresh all 5 output slots based on history state."""
     updates = []
     for i in range(5):
         if i < len(history):
             entry = history[i]
-            updates.append(gr.update(visible=True))  # container
-            updates.append(gr.update(value=entry["filename"]))  # filename
-            updates.append(gr.update(value=entry["path"], label=build_metadata_str(entry)))  # audio with metadata label
+            updates.append(gr.update(visible=True))
+            updates.append(gr.update(value=entry["filename"]))
+            updates.append(gr.update(value=entry["path"], label=build_metadata_str(entry)))
         else:
-            # Slot 0 stays visible but empty, others hide
-            updates.append(gr.update(visible=(i == 0)))  # container
-            updates.append(gr.update(value=""))  # filename
-            updates.append(gr.update(value=None, label=""))  # audio
+            updates.append(gr.update(visible=(i == 0)))
+            updates.append(gr.update(value=""))
+            updates.append(gr.update(value=None, label=""))
     return updates
 
 
 def refresh_slots_for_shift(history: list):
-    """Prepare slots for shift before generation - shows current history in shifted positions."""
+    """Prepare slots for shift before generation."""
     updates = []
-    # Slot 0: will show "Generating..." state
-    updates.append(gr.update(visible=True))  # container
-    updates.append(gr.update(value=""))  # filename cleared
-    updates.append(gr.update(value=None, label="Generating..."))  # audio with status label
+    updates.append(gr.update(visible=True))
+    updates.append(gr.update(value=""))
+    updates.append(gr.update(value=None, label="Generating..."))
 
-    # Slots 1-4: show current history items (which will become previous)
     for i in range(4):
         if i < len(history):
             entry = history[i]
-            updates.append(gr.update(visible=True))  # container
-            updates.append(gr.update(value=entry["filename"]))  # filename
-            updates.append(gr.update(value=entry["path"], label=build_metadata_str(entry)))  # audio with metadata label
+            updates.append(gr.update(visible=True))
+            updates.append(gr.update(value=entry["filename"]))
+            updates.append(gr.update(value=entry["path"], label=build_metadata_str(entry)))
         else:
-            updates.append(gr.update(visible=False))  # container
-            updates.append(gr.update(value=""))  # filename
-            updates.append(gr.update(value=None, label=""))  # audio
+            updates.append(gr.update(visible=False))
+            updates.append(gr.update(value=""))
+            updates.append(gr.update(value=None, label=""))
     return updates
 
 
@@ -572,7 +394,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                 # CLONE VOICE TAB
                 with gr.Tab("Clone Voice"):
                     gr.Markdown("Save a reference audio clip to use for voice cloning.")
-                    
+
                     create_ref_audio = gr.Audio(
                         label="Reference audio",
                         type="filepath",
@@ -647,7 +469,6 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         with gr.Column(scale=1, elem_classes=["history-section"]):
             gr.Markdown("### Output")
 
-            # Create 5 output slots (current + 4 history)
             output_slots = []
 
             for i in range(5):
@@ -687,7 +508,6 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
     def do_generate_preset(text, voice, instruct, temp, model, history):
         path, new_history = generate_preset(text, voice, instruct, temp, model, history)
-        # Only update slot 0 (current)
         return [
             new_history,
             gr.update(visible=True),
@@ -727,7 +547,6 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         def do_delete(history):
             if slot_index >= len(history):
                 return [history] + refresh_all_slots(history)
-            # Always delete from disk
             new_history = delete_generation(history, slot_index, delete_file=True)
             return [new_history] + refresh_all_slots(new_history)
         return do_delete
