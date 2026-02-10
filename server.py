@@ -1,6 +1,7 @@
 """FastAPI server for programmatic Qwen3-TTS access."""
 
 import argparse
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -20,6 +21,8 @@ from tts import (
     generate_design_audio,
     generate_clone_audio,
 )
+
+OUTPUTS_DIR = Path("outputs")
 
 app = FastAPI(title="Qwen3-TTS API", version="1.0.0")
 
@@ -82,11 +85,13 @@ def generate_preset(req: PresetRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return FileResponse(
-        metadata["path"],
-        media_type="audio/wav",
-        filename=metadata["filename"],
-    )
+    return {
+        "filename": metadata["filename"],
+        "url": f"/outputs/{metadata['filename']}",
+        "voice": metadata.get("voice"),
+        "temperature": metadata.get("temperature"),
+        "instruct": metadata.get("instruct", ""),
+    }
 
 
 @app.post("/v1/tts/design")
@@ -103,11 +108,12 @@ def generate_design(req: DesignRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return FileResponse(
-        metadata["path"],
-        media_type="audio/wav",
-        filename=metadata["filename"],
-    )
+    return {
+        "filename": metadata["filename"],
+        "url": f"/outputs/{metadata['filename']}",
+        "temperature": metadata.get("temperature"),
+        "instruct": metadata.get("instruct", ""),
+    }
 
 
 @app.post("/v1/tts/clone")
@@ -124,11 +130,20 @@ def generate_clone(req: CloneRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return FileResponse(
-        metadata["path"],
-        media_type="audio/wav",
-        filename=metadata["filename"],
-    )
+    return {
+        "filename": metadata["filename"],
+        "url": f"/outputs/{metadata['filename']}",
+        "voice": metadata.get("voice"),
+        "temperature": metadata.get("temperature"),
+    }
+
+
+@app.get("/outputs/{filename}")
+def get_output(filename: str):
+    path = OUTPUTS_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path, media_type="audio/wav", filename=filename)
 
 
 if __name__ == "__main__":
