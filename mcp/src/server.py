@@ -257,12 +257,14 @@ def main():
             return JSONResponse({"status": "ok"})
 
         # Combine MCP + static file serving + health endpoint
+        # lifespan must be passed through for FastMCP's session manager
         app = Starlette(
             routes=[
                 Route("/health", health),
                 Mount("/files", app=StaticFiles(directory=str(OUTPUT_DIR)), name="files"),
                 Mount("/", app=mcp_app),
-            ]
+            ],
+            lifespan=mcp_app.lifespan,
         )
 
         uvicorn.run(app, host=args.host, port=args.port)
