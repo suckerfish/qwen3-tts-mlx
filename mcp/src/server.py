@@ -243,7 +243,7 @@ def main():
     # Ensure output dir exists at startup
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    if args.transport == "streamable-http":
+    if args.transport in ("streamable-http", "sse"):
         import uvicorn
         from starlette.applications import Starlette
         from starlette.responses import JSONResponse
@@ -251,7 +251,7 @@ def main():
         from starlette.staticfiles import StaticFiles
 
         # Get the MCP ASGI app
-        mcp_app = mcp.streamable_http_app()
+        mcp_app = mcp.http_app(transport=args.transport)
 
         async def health(request):
             return JSONResponse({"status": "ok"})
