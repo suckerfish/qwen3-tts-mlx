@@ -37,13 +37,17 @@ mcp = FastMCP(
 client = TTSClient()
 
 
-def _save_wav(wav_bytes: bytes, filename: str) -> str:
-    """Persist WAV to the output volume and return the container path."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUTPUT_DIR / filename
-    out_path.write_bytes(wav_bytes)
-    logger.info("Saved %s (%d bytes)", out_path, len(wav_bytes))
-    return str(out_path)
+def _save_wav(wav_bytes: bytes, filename: str) -> str | None:
+    """Best-effort save of WAV to the output volume. Returns path or None."""
+    try:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = OUTPUT_DIR / filename
+        out_path.write_bytes(wav_bytes)
+        logger.info("Saved %s (%d bytes)", out_path, len(wav_bytes))
+        return str(out_path)
+    except OSError as exc:
+        logger.warning("Could not save WAV to %s: %s", OUTPUT_DIR / filename, exc)
+        return None
 
 
 # ------------------------------------------------------------------
@@ -119,6 +123,7 @@ async def generate_speech(
 
     file_path = _save_wav(wav_bytes, filename)
     metadata = {
+        "filename": filename,
         "file_path": file_path,
         "voice": voice,
         "temperature": temperature,
@@ -163,6 +168,7 @@ async def design_voice_speech(
 
     file_path = _save_wav(wav_bytes, filename)
     metadata = {
+        "filename": filename,
         "file_path": file_path,
         "instruct": instruct,
         "language": language,
@@ -206,6 +212,7 @@ async def clone_voice_speech(
 
     file_path = _save_wav(wav_bytes, filename)
     metadata = {
+        "filename": filename,
         "file_path": file_path,
         "voice": voice,
         "temperature": temperature,

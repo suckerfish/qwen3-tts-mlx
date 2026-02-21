@@ -16,8 +16,8 @@ COPY src/ src/
 # Install package and dependencies
 RUN uv pip install --system .
 
-# Non-root user
-RUN useradd --create-home appuser
+# Non-root user with writable output directory
+RUN useradd --create-home appuser && mkdir -p /output && chown appuser:appuser /output
 USER appuser
 
 EXPOSE 8080
