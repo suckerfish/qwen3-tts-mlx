@@ -10,6 +10,7 @@ A Gradio web app for [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) text-to-sp
 - **Model management** - Download and delete models from the UI
 - **Generation history** - 5 recent outputs with waveform playback, inline rename, and delete
 - **REST API** - FastAPI server for programmatic access
+- **MCP server** - Docker-based [MCP](https://modelcontextprotocol.io/) server for Claude Desktop and other MCP clients
 
 ## Requirements
 
@@ -91,6 +92,71 @@ curl -X POST http://localhost:8000/v1/tts/clone \
   -d '{"text": "Hello world", "voice": "my_saved_voice"}' \
   --output cloned.wav
 ```
+
+## MCP Server
+
+The MCP server runs in Docker and proxies requests to the FastAPI backend, letting MCP clients (Claude Desktop, mcporter, etc.) generate speech via tool calls. Generated audio is served over HTTP — tools return a download URL rather than inline audio.
+
+### Architecture
+
+```
+MCP Client (Claude Desktop, mcporter, etc.)
+    ↓ streamable-http
+Docker Container (MCP Server :8080)
+    ↓ HTTP → TTS_API_URL
+macOS Host (FastAPI server.py :8000)
+    ↓ MLX inference on Metal GPU
+WAV audio returned as download URL
+```
+
+### Quick Start
+
+The MCP server requires the FastAPI backend to be running on the host.
+
+```bash
+# 1. Start the TTS backend
+uv run python server.py
+
+# 2. Start the MCP server
+docker compose up -d
+
+# 3. Verify
+curl http://localhost:8080/health
+```
+
+### Configuration
+
+Copy `.env.example` to `.env` and adjust:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TTS_API_URL` | `http://host.docker.internal:8000` | URL of the FastAPI TTS backend |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base URL for audio download links |
+| `MCP_PORT` | `8080` | Host port mapped to the container |
+| `LOG_LEVEL` | `INFO` | Logging level |
+
+On Linux Docker (no `host.docker.internal`), set `TTS_API_URL` to the host's IP (e.g. `http://172.17.0.1:8000` or a Tailscale IP).
+
+### MCP Tools
+
+| Tool | Description | Returns |
+|------|-------------|---------|
+| `health_check` | Check if TTS backend is reachable | Status dict |
+| `list_voices` | List preset and saved voices | `{preset: [...], saved: [...]}` |
+| `list_models` | List models and download status | `{models: [...]}` |
+| `generate_speech` | Generate with a preset voice | `{url, filename, voice, ...}` |
+| `design_voice_speech` | Generate with an AI-designed voice | `{url, filename, instruct, ...}` |
+| `clone_voice_speech` | Generate with a saved/cloned voice | `{url, filename, voice, ...}` |
+
+Audio files are saved to `./outputs/` (bind-mounted) and served at `{PUBLIC_BASE_URL}/files/{filename}`.
+
+### Building Locally
+
+```bash
+docker build -t ghcr.io/suckerfish/qwen3-tts-mcp:latest ./mcp
+```
+
+Pre-built multi-arch images (amd64 + arm64) are published to GHCR on every push to `master`.
 
 ## Auto-start with launchd (macOS)
 
