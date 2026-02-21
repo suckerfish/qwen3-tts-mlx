@@ -5,7 +5,7 @@ services:
     environment:
       - TTS_API_URL=${TTS_API_URL:-http://host.docker.internal:8000}
       - OUTPUT_DIR=/output
-      - PORT=${MCP_PORT:-8080}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-http://localhost:${MCP_PORT:-8080}}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
       - "${MCP_PORT:-8080}:8080"
@@ -13,7 +13,7 @@ services:
       - ./outputs:/output
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-s", "-o", "/dev/null", "-H", "Accept: text/event-stream", "http://localhost:8080/mcp"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       start_period: 10s

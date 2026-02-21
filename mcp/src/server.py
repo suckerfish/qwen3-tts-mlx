@@ -1,6 +1,5 @@
 """FastMCP server exposing Qwen3-TTS generation tools."""
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -8,8 +7,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.utilities.types import Audio
-from mcp.types import TextContent
 
 from .tts_client import TTSClient, TTSClientError
 
@@ -22,6 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger("qwen3-tts-mcp")
 
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/output"))
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
 mcp = FastMCP(
     "Qwen3-TTS",
@@ -30,24 +28,23 @@ mcp = FastMCP(
         "Use health_check to verify the backend is running, "
         "list_voices / list_models to discover options, "
         "then generate_speech, design_voice_speech, or clone_voice_speech "
-        "to produce audio."
+        "to produce audio. Audio tools return a URL where the generated "
+        "WAV file can be downloaded."
     ),
 )
 
 client = TTSClient()
 
 
-def _save_wav(wav_bytes: bytes, filename: str) -> str | None:
-    """Best-effort save of WAV to the output volume. Returns path or None."""
-    try:
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = OUTPUT_DIR / filename
-        out_path.write_bytes(wav_bytes)
-        logger.info("Saved %s (%d bytes)", out_path, len(wav_bytes))
-        return str(out_path)
-    except OSError as exc:
-        logger.warning("Could not save WAV to %s: %s", OUTPUT_DIR / filename, exc)
-        return None
+def _save_and_url(wav_bytes: bytes, filename: str) -> str:
+    """Save WAV to output dir and return the public URL."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = OUTPUT_DIR / filename
+    out_path.write_bytes(wav_bytes)
+    logger.info("Saved %s (%d bytes)", out_path, len(wav_bytes))
+    if PUBLIC_BASE_URL:
+        return f"{PUBLIC_BASE_URL}/files/{filename}"
+    return f"/files/{filename}"
 
 
 # ------------------------------------------------------------------
@@ -97,7 +94,7 @@ async def generate_speech(
     instruct: str = "",
     temperature: float = 1.0,
     model: str | None = None,
-) -> list:
+) -> dict:
     """Generate speech audio from text using a preset voice.
 
     Args:
@@ -105,10 +102,10 @@ async def generate_speech(
         voice: Preset voice name (use list_voices to see options).
         instruct: Optional instruction to control speaking style,
                   e.g. "speak slowly and softly".
-        temperature: Sampling temperature (0.0–2.0). Higher = more varied.
+        temperature: Sampling temperature (0.0-2.0). Higher = more varied.
         model: Model name (use list_models to see options). Defaults to first available.
 
-    Returns audio content (WAV) and metadata including the saved file path.
+    Returns a dict with 'url' pointing to the generated WAV file.
     """
     try:
         wav_bytes, filename = await client.generate_speech(
@@ -121,18 +118,18 @@ async def generate_speech(
     except TTSClientError as exc:
         raise ToolError(str(exc))
 
-    file_path = _save_wav(wav_bytes, filename)
-    metadata = {
+    try:
+        url = _save_and_url(wav_bytes, filename)
+    except OSError as exc:
+        raise ToolError(f"Failed to save audio: {exc}")
+
+    return {
+        "url": url,
         "filename": filename,
-        "file_path": file_path,
         "voice": voice,
         "temperature": temperature,
         "model": model,
     }
-    return [
-        TextContent(type="text", text=json.dumps(metadata)),
-        Audio(data=wav_bytes, format="wav"),
-    ]
 
 
 @mcp.tool()
@@ -141,7 +138,7 @@ async def design_voice_speech(
     instruct: str,
     language: str = "Auto",
     temperature: float = 0.9,
-) -> list:
+) -> dict:
     """Generate speech with a designed (AI-created) voice.
 
     Instead of picking a preset voice, describe the voice characteristics
@@ -152,9 +149,9 @@ async def design_voice_speech(
         instruct: Description of the desired voice, e.g.
                   "a deep male voice with a British accent".
         language: Language code or "Auto" for automatic detection.
-        temperature: Sampling temperature (0.0–2.0).
+        temperature: Sampling temperature (0.0-2.0).
 
-    Returns audio content (WAV) and metadata including the saved file path.
+    Returns a dict with 'url' pointing to the generated WAV file.
     """
     try:
         wav_bytes, filename = await client.design_voice_speech(
@@ -166,18 +163,18 @@ async def design_voice_speech(
     except TTSClientError as exc:
         raise ToolError(str(exc))
 
-    file_path = _save_wav(wav_bytes, filename)
-    metadata = {
+    try:
+        url = _save_and_url(wav_bytes, filename)
+    except OSError as exc:
+        raise ToolError(f"Failed to save audio: {exc}")
+
+    return {
+        "url": url,
         "filename": filename,
-        "file_path": file_path,
         "instruct": instruct,
         "language": language,
         "temperature": temperature,
     }
-    return [
-        TextContent(type="text", text=json.dumps(metadata)),
-        Audio(data=wav_bytes, format="wav"),
-    ]
 
 
 @mcp.tool()
@@ -186,19 +183,19 @@ async def clone_voice_speech(
     voice: str,
     temperature: float = 1.0,
     model: str | None = None,
-) -> list:
+) -> dict:
     """Generate speech using a previously saved (cloned) voice.
 
-    The voice must be one of the saved voices — use list_voices to see
+    The voice must be one of the saved voices -- use list_voices to see
     what's available under the 'saved' key.
 
     Args:
         text: The text to speak.
         voice: Name of a saved voice (from list_voices 'saved' list).
-        temperature: Sampling temperature (0.0–2.0).
+        temperature: Sampling temperature (0.0-2.0).
         model: Model name (use list_models to see options). Defaults to first available.
 
-    Returns audio content (WAV) and metadata including the saved file path.
+    Returns a dict with 'url' pointing to the generated WAV file.
     """
     try:
         wav_bytes, filename = await client.clone_voice_speech(
@@ -210,18 +207,18 @@ async def clone_voice_speech(
     except TTSClientError as exc:
         raise ToolError(str(exc))
 
-    file_path = _save_wav(wav_bytes, filename)
-    metadata = {
+    try:
+        url = _save_and_url(wav_bytes, filename)
+    except OSError as exc:
+        raise ToolError(f"Failed to save audio: {exc}")
+
+    return {
+        "url": url,
         "filename": filename,
-        "file_path": file_path,
         "voice": voice,
         "temperature": temperature,
         "model": model,
     }
-    return [
-        TextContent(type="text", text=json.dumps(metadata)),
-        Audio(data=wav_bytes, format="wav"),
-    ]
 
 
 # ------------------------------------------------------------------
@@ -243,7 +240,34 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="Bind port (default: 8080)")
     args = parser.parse_args()
 
-    mcp.run(transport=args.transport, host=args.host, port=args.port)
+    # Ensure output dir exists at startup
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.transport == "streamable-http":
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse
+        from starlette.routing import Mount, Route
+        from starlette.staticfiles import StaticFiles
+
+        # Get the MCP ASGI app
+        mcp_app = mcp.streamable_http_app()
+
+        async def health(request):
+            return JSONResponse({"status": "ok"})
+
+        # Combine MCP + static file serving + health endpoint
+        app = Starlette(
+            routes=[
+                Route("/health", health),
+                Mount("/files", app=StaticFiles(directory=str(OUTPUT_DIR)), name="files"),
+                Mount("/", app=mcp_app),
+            ]
+        )
+
+        uvicorn.run(app, host=args.host, port=args.port)
+    else:
+        mcp.run(transport=args.transport, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
