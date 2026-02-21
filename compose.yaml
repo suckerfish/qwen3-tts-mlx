@@ -1,0 +1,20 @@
+services:
+  qwen3-tts-mcp:
+    image: ghcr.io/suckerfish/qwen3-tts-mcp:latest
+    container_name: qwen3-tts-mcp
+    environment:
+      - TTS_API_URL=${TTS_API_URL:-http://host.docker.internal:8000}
+      - OUTPUT_DIR=/output
+      - PORT=${MCP_PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    volumes:
+      - ./outputs:/output
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
