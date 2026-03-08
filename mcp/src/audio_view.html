@@ -49,14 +49,6 @@
   .error {
     font-size: 13px;
     color: #f87171;
-    word-break: break-all;
-  }
-  .debug {
-    font-size: 11px;
-    color: #52525b;
-    word-break: break-all;
-    max-height: 80px;
-    overflow: auto;
   }
 </style>
 </head>
@@ -72,7 +64,6 @@
     </a>
   </div>
   <div id="error" class="error" style="display:none"></div>
-  <div id="debug" class="debug" style="display:none"></div>
 </div>
 
 <script type="module">
@@ -80,11 +71,8 @@ import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-
 
 const app = new App({ name: "Qwen3-TTS Player", version: "1.0.0" });
 
-function log(msg) {
-  const el = document.getElementById("debug");
-  el.style.display = "block";
-  el.textContent += msg + "\n";
-}
+// Tool name prefixes: bare (direct) and MetaMCP-namespaced
+const TOOL_PREFIXES = ["", "qwen3-tts-mcp__"];
 
 function showContent() {
   document.getElementById("status").style.display = "none";
@@ -102,45 +90,22 @@ function showError(msg) {
   el.style.display = "block";
 }
 
-function setBlobAudio(blobUrl, filename) {
-  document.getElementById("player").src = blobUrl;
-  const dl = document.getElementById("download");
-  dl.onclick = (e) => {
-    e.preventDefault();
-    const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = filename || "output.wav";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
-  showContent();
-}
-
-// Known MCP aggregator prefixes to try for tool name resolution
-const TOOL_PREFIXES = ["", "qwen3-tts-mcp__"];
-
 async function callAudioTool(toolName, filename) {
-  log("Trying callServerTool: " + toolName);
   const result = await app.callServerTool({
     name: toolName,
     arguments: { filename },
   });
-  log("result: " + JSON.stringify(result).slice(0, 200));
 
   if (result?.isError) {
-    const msg = result?.content?.[0]?.text || "Unknown error";
-    throw new Error(msg);
+    throw new Error(result?.content?.[0]?.text || "Unknown error");
   }
 
   const audioText = result?.content?.find(c => c.type === "text");
-  if (!audioText?.text) throw new Error("No text content in result");
-  if (!audioText.text.startsWith("{")) {
-    throw new Error(audioText.text.slice(0, 200));
-  }
+  if (!audioText?.text) throw new Error("No audio data returned");
+  if (!audioText.text.startsWith("{")) throw new Error(audioText.text);
 
   const audioData = JSON.parse(audioText.text);
-  if (!audioData.audio_b64) throw new Error("No audio_b64 in response");
+  if (!audioData.audio_b64) throw new Error("No audio data in response");
 
   const byteChars = atob(audioData.audio_b64);
   const bytes = new Uint8Array(byteChars.length);
@@ -150,27 +115,13 @@ async function callAudioTool(toolName, filename) {
   return new Blob([bytes], { type: "audio/wav" });
 }
 
-// Try each prefix until one works
-async function tryCallServerTool(filename) {
-  let lastErr;
+async function loadAudio(filename) {
   for (const prefix of TOOL_PREFIXES) {
     try {
       return await callAudioTool(prefix + "get_audio_data", filename);
-    } catch (err) {
-      lastErr = err;
-      log(prefix + "get_audio_data failed: " + err.message);
-    }
+    } catch { /* try next prefix */ }
   }
-  throw lastErr;
-}
-
-// Attempt 2: HTTP fetch from the file URL
-async function tryFetch(url) {
-  log("Trying fetch: " + url);
-  const resp = await fetch(url);
-  log("fetch status: " + resp.status);
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  return await resp.blob();
+  throw new Error("Could not load audio via any tool name");
 }
 
 app.ontoolresult = async ({ content }) => {
@@ -189,33 +140,26 @@ app.ontoolresult = async ({ content }) => {
 
   document.getElementById("status").textContent = "Loading audio...";
 
-  // Try callServerTool first, then fetch fallback
-  let blob = null;
-  let errors = [];
-
   try {
-    blob = await tryCallServerTool(data.filename);
-    log("callServerTool succeeded");
-  } catch (err) {
-    errors.push("callServerTool: " + err.message);
-    log("callServerTool failed: " + err.message);
-  }
-
-  if (!blob && data.url) {
-    try {
-      blob = await tryFetch(data.url);
-      log("fetch succeeded");
-    } catch (err) {
-      errors.push("fetch: " + err.message);
-      log("fetch failed: " + err.message);
-    }
-  }
-
-  if (blob) {
+    const blob = await loadAudio(data.filename);
     const blobUrl = URL.createObjectURL(blob);
-    setBlobAudio(blobUrl, data.filename);
-  } else {
-    showError("Could not load audio. " + errors.join(" | "));
+
+    document.getElementById("player").src = blobUrl;
+
+    const dl = document.getElementById("download");
+    dl.onclick = (e) => {
+      e.preventDefault();
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = data.filename || "output.wav";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+
+    showContent();
+  } catch (err) {
+    showError(err.message);
   }
 };
 
