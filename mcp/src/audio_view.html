@@ -49,6 +49,14 @@
   .error {
     font-size: 13px;
     color: #f87171;
+    word-break: break-all;
+  }
+  .debug {
+    font-size: 11px;
+    color: #52525b;
+    word-break: break-all;
+    max-height: 80px;
+    overflow: auto;
   }
 </style>
 </head>
@@ -64,12 +72,19 @@
     </a>
   </div>
   <div id="error" class="error" style="display:none"></div>
+  <div id="debug" class="debug" style="display:none"></div>
 </div>
 
 <script type="module">
 import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-with-deps";
 
 const app = new App({ name: "Qwen3-TTS Player", version: "1.0.0" });
+
+function log(msg) {
+  const el = document.getElementById("debug");
+  el.style.display = "block";
+  el.textContent += msg + "\n";
+}
 
 function showContent() {
   document.getElementById("status").style.display = "none";
@@ -85,6 +100,58 @@ function showError(msg) {
   const el = document.getElementById("error");
   el.textContent = msg;
   el.style.display = "block";
+}
+
+function setBlobAudio(blobUrl, filename) {
+  document.getElementById("player").src = blobUrl;
+  const dl = document.getElementById("download");
+  dl.onclick = (e) => {
+    e.preventDefault();
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename || "output.wav";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+  showContent();
+}
+
+// Attempt 1: callServerTool to get base64 audio via MCP bridge
+async function tryCallServerTool(filename) {
+  log("Trying callServerTool: get_audio_data");
+  const result = await app.callServerTool({
+    name: "get_audio_data",
+    arguments: { filename },
+  });
+  log("callServerTool result: " + JSON.stringify(result).slice(0, 200));
+
+  const audioText = result?.content?.find(c => c.type === "text");
+  if (!audioText?.text) throw new Error("No text content in result");
+
+  // Check if result is an error message (not JSON)
+  if (!audioText.text.startsWith("{")) {
+    throw new Error("Tool returned error: " + audioText.text.slice(0, 200));
+  }
+
+  const audioData = JSON.parse(audioText.text);
+  if (!audioData.audio_b64) throw new Error("No audio_b64 in response");
+
+  const byteChars = atob(audioData.audio_b64);
+  const bytes = new Uint8Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) {
+    bytes[i] = byteChars.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: "audio/wav" });
+}
+
+// Attempt 2: HTTP fetch from the file URL
+async function tryFetch(url) {
+  log("Trying fetch: " + url);
+  const resp = await fetch(url);
+  log("fetch status: " + resp.status);
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  return await resp.blob();
 }
 
 app.ontoolresult = async ({ content }) => {
@@ -103,42 +170,33 @@ app.ontoolresult = async ({ content }) => {
 
   document.getElementById("status").textContent = "Loading audio...";
 
+  // Try callServerTool first, then fetch fallback
+  let blob = null;
+  let errors = [];
+
   try {
-    // Call the private server tool to get audio as base64
-    const result = await app.callServerTool({
-      name: "get_audio_data",
-      arguments: { filename: data.filename },
-    });
-
-    const audioText = result?.content?.find(c => c.type === "text");
-    if (!audioText?.text) throw new Error("No audio data returned");
-
-    const audioData = JSON.parse(audioText.text);
-    const byteChars = atob(audioData.audio_b64);
-    const bytes = new Uint8Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) {
-      bytes[i] = byteChars.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: "audio/wav" });
-    const blobUrl = URL.createObjectURL(blob);
-
-    document.getElementById("player").src = blobUrl;
-
-    // Download link: create a click handler that triggers a download
-    const dl = document.getElementById("download");
-    dl.onclick = (e) => {
-      e.preventDefault();
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = data.filename || "output.wav";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    };
-
-    showContent();
+    blob = await tryCallServerTool(data.filename);
+    log("callServerTool succeeded");
   } catch (err) {
-    showError("Failed to load audio: " + err.message);
+    errors.push("callServerTool: " + err.message);
+    log("callServerTool failed: " + err.message);
+  }
+
+  if (!blob && data.url) {
+    try {
+      blob = await tryFetch(data.url);
+      log("fetch succeeded");
+    } catch (err) {
+      errors.push("fetch: " + err.message);
+      log("fetch failed: " + err.message);
+    }
+  }
+
+  if (blob) {
+    const blobUrl = URL.createObjectURL(blob);
+    setBlobAudio(blobUrl, data.filename);
+  } else {
+    showError("Could not load audio. " + errors.join(" | "));
   }
 };
 
