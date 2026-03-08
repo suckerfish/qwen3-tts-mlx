@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen3-TTS Player</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 16px;
+    color: #e4e4e7;
+    background: #18181b;
+  }
+  .player-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 480px;
+  }
+  audio {
+    width: 100%;
+    height: 40px;
+  }
+  .meta {
+    font-size: 13px;
+    color: #a1a1aa;
+  }
+  .meta span { color: #e4e4e7; }
+  .download {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #60a5fa;
+    text-decoration: none;
+  }
+  .download:hover { text-decoration: underline; }
+  .download svg {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+  }
+  .waiting {
+    font-size: 13px;
+    color: #71717a;
+  }
+</style>
+</head>
+<body>
+<div class="player-wrap">
+  <div id="waiting" class="waiting">Waiting for audio...</div>
+  <div id="content" style="display:none">
+    <audio id="player" controls autoplay></audio>
+    <div class="meta" id="info"></div>
+    <a id="download" class="download" target="_blank">
+      <svg viewBox="0 0 16 16"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zm-6 2h12v1.5H2V14z"/></svg>
+      <span>Download WAV</span>
+    </a>
+  </div>
+</div>
+
+<script type="module">
+import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-with-deps";
+
+const app = new App({ name: "Qwen3-TTS Player", version: "1.0.0" });
+
+app.ontoolresult = ({ content }) => {
+  const text = content?.find(c => c.type === "text");
+  if (!text?.text) return;
+
+  let data;
+  try { data = JSON.parse(text.text); } catch { return; }
+
+  const player = document.getElementById("player");
+  const info = document.getElementById("info");
+  const dl = document.getElementById("download");
+
+  player.src = data.url;
+  dl.href = data.url;
+  dl.download = data.filename || "output.wav";
+
+  const parts = [];
+  if (data.voice) parts.push(`Voice: <span>${data.voice}</span>`);
+  if (data.instruct) parts.push(`Style: <span>${data.instruct}</span>`);
+  if (data.filename) parts.push(`File: <span>${data.filename}</span>`);
+  info.innerHTML = parts.join(" &middot; ");
+
+  document.getElementById("waiting").style.display = "none";
+  document.getElementById("content").style.display = "flex";
+  document.getElementById("content").style.flexDirection = "column";
+  document.getElementById("content").style.gap = "12px";
+};
+
+await app.connect();
+</script>
+</body>
+</html>

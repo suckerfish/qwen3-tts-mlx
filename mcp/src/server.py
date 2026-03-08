@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.apps import AppConfig, ResourceCSP
 
 from .tts_client import TTSClient, TTSClientError
 
@@ -20,6 +21,11 @@ logger = logging.getLogger("qwen3-tts-mcp")
 
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/output"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+
+PLAYER_HTML = (Path(__file__).parent / "audio_view.html").read_text()
+
+VIEW_URI = "ui://qwen3-tts/player.html"
+AUDIO_APP = AppConfig(resource_uri=VIEW_URI)
 
 mcp = FastMCP(
     "Qwen3-TTS",
@@ -45,6 +51,29 @@ def _save_and_url(wav_bytes: bytes, filename: str) -> str:
     if PUBLIC_BASE_URL:
         return f"{PUBLIC_BASE_URL}/files/{filename}"
     return f"/files/{filename}"
+
+
+# ------------------------------------------------------------------
+# MCP App: audio player view
+# ------------------------------------------------------------------
+
+_csp_resource_domains = ["https://unpkg.com"]
+_csp_connect_domains = [PUBLIC_BASE_URL] if PUBLIC_BASE_URL else []
+
+
+@mcp.resource(
+    VIEW_URI,
+    mime_type="text/html;profile=mcp-app",
+    app=AppConfig(
+        csp=ResourceCSP(
+            resource_domains=_csp_resource_domains,
+            connect_domains=_csp_connect_domains,
+        )
+    ),
+)
+def audio_player_view() -> str:
+    """Interactive audio player for generated speech."""
+    return PLAYER_HTML
 
 
 # ------------------------------------------------------------------
@@ -87,7 +116,7 @@ async def list_models() -> dict:
         raise ToolError(str(exc))
 
 
-@mcp.tool()
+@mcp.tool(app=AUDIO_APP)
 async def generate_speech(
     text: str,
     voice: str = "Ryan",
@@ -132,7 +161,7 @@ async def generate_speech(
     }
 
 
-@mcp.tool()
+@mcp.tool(app=AUDIO_APP)
 async def design_voice_speech(
     text: str,
     instruct: str,
@@ -177,7 +206,7 @@ async def design_voice_speech(
     }
 
 
-@mcp.tool()
+@mcp.tool(app=AUDIO_APP)
 async def clone_voice_speech(
     text: str,
     voice: str,
