@@ -1,5 +1,6 @@
 """FastMCP server exposing Qwen3-TTS generation tools."""
 
+import base64
 import logging
 import os
 from pathlib import Path
@@ -57,23 +58,45 @@ def _save_and_url(wav_bytes: bytes, filename: str) -> str:
 # MCP App: audio player view
 # ------------------------------------------------------------------
 
-_csp_resource_domains = ["https://unpkg.com"]
-_csp_connect_domains = [PUBLIC_BASE_URL] if PUBLIC_BASE_URL else []
-
-
 @mcp.resource(
     VIEW_URI,
     mime_type="text/html;profile=mcp-app",
     app=AppConfig(
         csp=ResourceCSP(
-            resource_domains=_csp_resource_domains,
-            connect_domains=_csp_connect_domains,
+            resource_domains=["https://unpkg.com"],
         )
     ),
 )
 def audio_player_view() -> str:
     """Interactive audio player for generated speech."""
     return PLAYER_HTML
+
+
+# ------------------------------------------------------------------
+# Private tools (visible to the MCP App iframe only, not the LLM)
+# ------------------------------------------------------------------
+
+APP_ONLY = AppConfig(visibility=["app"])
+
+
+@mcp.tool(app=APP_ONLY)
+async def get_audio_data(filename: str) -> dict:
+    """Retrieve generated audio as base64-encoded WAV data.
+
+    Args:
+        filename: Name of the generated WAV file.
+
+    Returns a dict with 'audio_b64' (base64 WAV) and 'mime_type'.
+    """
+    filepath = OUTPUT_DIR / filename
+    if not filepath.is_file():
+        raise ToolError(f"File not found: {filename}")
+    wav_bytes = filepath.read_bytes()
+    return {
+        "audio_b64": base64.b64encode(wav_bytes).decode(),
+        "mime_type": "audio/wav",
+        "filename": filename,
+    }
 
 
 # ------------------------------------------------------------------
@@ -275,8 +298,6 @@ def main():
     if args.transport in ("streamable-http", "sse"):
         import uvicorn
         from starlette.applications import Starlette
-        from starlette.middleware import Middleware
-        from starlette.middleware.cors import CORSMiddleware
         from starlette.responses import JSONResponse
         from starlette.routing import Mount, Route
         from starlette.staticfiles import StaticFiles
@@ -289,7 +310,6 @@ def main():
 
         # Combine MCP + static file serving + health endpoint
         # lifespan must be passed through for FastMCP's session manager
-        # CORS middleware allows the sandboxed MCP App iframe to fetch audio files
         app = Starlette(
             routes=[
                 Route("/health", health),
@@ -297,14 +317,6 @@ def main():
                 Mount("/", app=mcp_app),
             ],
             lifespan=mcp_app.lifespan,
-            middleware=[
-                Middleware(
-                    CORSMiddleware,
-                    allow_origins=["*"],
-                    allow_methods=["GET"],
-                    allow_headers=["*"],
-                ),
-            ],
         )
 
         uvicorn.run(app, host=args.host, port=args.port)

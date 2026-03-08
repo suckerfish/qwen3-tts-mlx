@@ -34,6 +34,7 @@
     font-size: 13px;
     color: #60a5fa;
     text-decoration: none;
+    cursor: pointer;
   }
   .download:hover { text-decoration: underline; }
   .download svg {
@@ -41,29 +42,50 @@
     height: 14px;
     fill: currentColor;
   }
-  .waiting {
+  .status {
     font-size: 13px;
     color: #71717a;
+  }
+  .error {
+    font-size: 13px;
+    color: #f87171;
   }
 </style>
 </head>
 <body>
 <div class="player-wrap">
-  <div id="waiting" class="waiting">Waiting for audio...</div>
+  <div id="status" class="status">Waiting for audio...</div>
   <div id="content" style="display:none">
     <audio id="player" controls autoplay></audio>
     <div class="meta" id="info"></div>
-    <a id="download" class="download" target="_blank">
+    <a id="download" class="download">
       <svg viewBox="0 0 16 16"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zm-6 2h12v1.5H2V14z"/></svg>
       <span>Download WAV</span>
     </a>
   </div>
+  <div id="error" class="error" style="display:none"></div>
 </div>
 
 <script type="module">
 import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-with-deps";
 
 const app = new App({ name: "Qwen3-TTS Player", version: "1.0.0" });
+
+function showContent() {
+  document.getElementById("status").style.display = "none";
+  document.getElementById("error").style.display = "none";
+  const el = document.getElementById("content");
+  el.style.display = "flex";
+  el.style.flexDirection = "column";
+  el.style.gap = "12px";
+}
+
+function showError(msg) {
+  document.getElementById("status").style.display = "none";
+  const el = document.getElementById("error");
+  el.textContent = msg;
+  el.style.display = "block";
+}
 
 app.ontoolresult = async ({ content }) => {
   const text = content?.find(c => c.type === "text");
@@ -72,44 +94,51 @@ app.ontoolresult = async ({ content }) => {
   let data;
   try { data = JSON.parse(text.text); } catch { return; }
 
-  const player = document.getElementById("player");
   const info = document.getElementById("info");
-  const dl = document.getElementById("download");
-  const waiting = document.getElementById("waiting");
-
-  waiting.textContent = "Loading audio...";
-
   const parts = [];
   if (data.voice) parts.push(`Voice: <span>${data.voice}</span>`);
   if (data.instruct) parts.push(`Style: <span>${data.instruct}</span>`);
   if (data.filename) parts.push(`File: <span>${data.filename}</span>`);
   info.innerHTML = parts.join(" &middot; ");
 
-  // Fetch audio as blob to bypass iframe CSP media-src restrictions
+  document.getElementById("status").textContent = "Loading audio...";
+
   try {
-    const resp = await fetch(data.url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const blob = await resp.blob();
+    // Call the private server tool to get audio as base64
+    const result = await app.callServerTool({
+      name: "get_audio_data",
+      arguments: { filename: data.filename },
+    });
+
+    const audioText = result?.content?.find(c => c.type === "text");
+    if (!audioText?.text) throw new Error("No audio data returned");
+
+    const audioData = JSON.parse(audioText.text);
+    const byteChars = atob(audioData.audio_b64);
+    const bytes = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {
+      bytes[i] = byteChars.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "audio/wav" });
     const blobUrl = URL.createObjectURL(blob);
 
-    player.src = blobUrl;
-    dl.href = blobUrl;
-    dl.download = data.filename || "output.wav";
+    document.getElementById("player").src = blobUrl;
 
-    waiting.style.display = "none";
-    document.getElementById("content").style.display = "flex";
-    document.getElementById("content").style.flexDirection = "column";
-    document.getElementById("content").style.gap = "12px";
+    // Download link: create a click handler that triggers a download
+    const dl = document.getElementById("download");
+    dl.onclick = (e) => {
+      e.preventDefault();
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = data.filename || "output.wav";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+
+    showContent();
   } catch (err) {
-    // Fallback: try direct URL (works if CSP allows it)
-    player.src = data.url;
-    dl.href = data.url;
-    dl.download = data.filename || "output.wav";
-
-    waiting.style.display = "none";
-    document.getElementById("content").style.display = "flex";
-    document.getElementById("content").style.flexDirection = "column";
-    document.getElementById("content").style.gap = "12px";
+    showError("Failed to load audio: " + err.message);
   }
 };
 
