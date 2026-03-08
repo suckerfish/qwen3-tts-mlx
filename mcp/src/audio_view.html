@@ -113,18 +113,12 @@
     cursor: pointer;
   }
 
-  /* Meta & download */
+  /* Meta */
   .meta {
     font-size: 13px;
     color: #a1a1aa;
   }
   .meta span { color: #e4e4e7; }
-  .download-btn {
-    gap: 6px;
-    color: #60a5fa;
-    border-color: #60a5fa33;
-  }
-  .download-btn:hover { background: #60a5fa22; }
 
   .status {
     font-size: 13px;
@@ -172,10 +166,6 @@
         <input type="range" class="volume-slider" id="volume" min="0" max="1" step="0.05" value="1">
       </div>
 
-      <button class="btn btn-sm download-btn" id="downloadBtn" title="Download WAV">
-        <svg viewBox="0 0 16 16"><path d="M8 12l-4-4h2.5V2h3v6H12L8 12zm-6 2h12v1.5H2V14z"/></svg>
-        Save
-      </button>
     </div>
 
     <!-- Metadata -->
@@ -193,7 +183,6 @@ const TOOL_PREFIXES = ["", "qwen3-tts-mcp__"];
 
 const player = document.getElementById("player");
 let currentBlobUrl = null;
-let currentFilename = "output.wav";
 
 // --- UI helpers ---
 
@@ -265,17 +254,6 @@ document.getElementById("volume").oninput = (e) => {
   player.volume = parseFloat(e.target.value);
 };
 
-// Download via blob URL
-document.getElementById("downloadBtn").onclick = () => {
-  if (!currentBlobUrl) return;
-  const a = document.createElement("a");
-  a.href = currentBlobUrl;
-  a.download = currentFilename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-};
-
 // --- Audio loading via callServerTool ---
 
 async function callAudioTool(toolName, filename) {
@@ -327,7 +305,6 @@ mcpApp.ontoolresult = async ({ content }) => {
   info.innerHTML = parts.join(" &middot; ");
 
   document.getElementById("status").textContent = "Loading audio...";
-  currentFilename = data.filename || "output.wav";
 
   try {
     const blob = await loadAudio(data.filename);
