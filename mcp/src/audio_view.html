@@ -117,21 +117,26 @@ function setBlobAudio(blobUrl, filename) {
   showContent();
 }
 
-// Attempt 1: callServerTool to get base64 audio via MCP bridge
-async function tryCallServerTool(filename) {
-  log("Trying callServerTool: get_audio_data");
+// Known MCP aggregator prefixes to try for tool name resolution
+const TOOL_PREFIXES = ["", "qwen3-tts-mcp__"];
+
+async function callAudioTool(toolName, filename) {
+  log("Trying callServerTool: " + toolName);
   const result = await app.callServerTool({
-    name: "get_audio_data",
+    name: toolName,
     arguments: { filename },
   });
-  log("callServerTool result: " + JSON.stringify(result).slice(0, 200));
+  log("result: " + JSON.stringify(result).slice(0, 200));
+
+  if (result?.isError) {
+    const msg = result?.content?.[0]?.text || "Unknown error";
+    throw new Error(msg);
+  }
 
   const audioText = result?.content?.find(c => c.type === "text");
   if (!audioText?.text) throw new Error("No text content in result");
-
-  // Check if result is an error message (not JSON)
   if (!audioText.text.startsWith("{")) {
-    throw new Error("Tool returned error: " + audioText.text.slice(0, 200));
+    throw new Error(audioText.text.slice(0, 200));
   }
 
   const audioData = JSON.parse(audioText.text);
@@ -143,6 +148,20 @@ async function tryCallServerTool(filename) {
     bytes[i] = byteChars.charCodeAt(i);
   }
   return new Blob([bytes], { type: "audio/wav" });
+}
+
+// Try each prefix until one works
+async function tryCallServerTool(filename) {
+  let lastErr;
+  for (const prefix of TOOL_PREFIXES) {
+    try {
+      return await callAudioTool(prefix + "get_audio_data", filename);
+    } catch (err) {
+      lastErr = err;
+      log(prefix + "get_audio_data failed: " + err.message);
+    }
+  }
+  throw lastErr;
 }
 
 // Attempt 2: HTTP fetch from the file URL

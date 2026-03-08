@@ -73,15 +73,17 @@ def audio_player_view() -> str:
 
 
 # ------------------------------------------------------------------
-# Private tools (visible to the MCP App iframe only, not the LLM)
+# Audio data tool (used by the MCP App iframe to load audio)
 # ------------------------------------------------------------------
 
-APP_ONLY = AppConfig(visibility=["app"])
 
-
-@mcp.tool(app=APP_ONLY)
+@mcp.tool()
 async def get_audio_data(filename: str) -> dict:
     """Retrieve generated audio as base64-encoded WAV data.
+
+    This tool is used internally by the audio player UI. You do not
+    need to call it directly — use generate_speech, design_voice_speech,
+    or clone_voice_speech instead.
 
     Args:
         filename: Name of the generated WAV file.
