@@ -65,7 +65,7 @@ import { App } from "https://unpkg.com/@modelcontextprotocol/ext-apps@0.4.0/app-
 
 const app = new App({ name: "Qwen3-TTS Player", version: "1.0.0" });
 
-app.ontoolresult = ({ content }) => {
+app.ontoolresult = async ({ content }) => {
   const text = content?.find(c => c.type === "text");
   if (!text?.text) return;
 
@@ -75,10 +75,9 @@ app.ontoolresult = ({ content }) => {
   const player = document.getElementById("player");
   const info = document.getElementById("info");
   const dl = document.getElementById("download");
+  const waiting = document.getElementById("waiting");
 
-  player.src = data.url;
-  dl.href = data.url;
-  dl.download = data.filename || "output.wav";
+  waiting.textContent = "Loading audio...";
 
   const parts = [];
   if (data.voice) parts.push(`Voice: <span>${data.voice}</span>`);
@@ -86,10 +85,32 @@ app.ontoolresult = ({ content }) => {
   if (data.filename) parts.push(`File: <span>${data.filename}</span>`);
   info.innerHTML = parts.join(" &middot; ");
 
-  document.getElementById("waiting").style.display = "none";
-  document.getElementById("content").style.display = "flex";
-  document.getElementById("content").style.flexDirection = "column";
-  document.getElementById("content").style.gap = "12px";
+  // Fetch audio as blob to bypass iframe CSP media-src restrictions
+  try {
+    const resp = await fetch(data.url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+
+    player.src = blobUrl;
+    dl.href = blobUrl;
+    dl.download = data.filename || "output.wav";
+
+    waiting.style.display = "none";
+    document.getElementById("content").style.display = "flex";
+    document.getElementById("content").style.flexDirection = "column";
+    document.getElementById("content").style.gap = "12px";
+  } catch (err) {
+    // Fallback: try direct URL (works if CSP allows it)
+    player.src = data.url;
+    dl.href = data.url;
+    dl.download = data.filename || "output.wav";
+
+    waiting.style.display = "none";
+    document.getElementById("content").style.display = "flex";
+    document.getElementById("content").style.flexDirection = "column";
+    document.getElementById("content").style.gap = "12px";
+  }
 };
 
 await app.connect();
