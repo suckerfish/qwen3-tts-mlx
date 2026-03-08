@@ -275,6 +275,8 @@ def main():
     if args.transport in ("streamable-http", "sse"):
         import uvicorn
         from starlette.applications import Starlette
+        from starlette.middleware import Middleware
+        from starlette.middleware.cors import CORSMiddleware
         from starlette.responses import JSONResponse
         from starlette.routing import Mount, Route
         from starlette.staticfiles import StaticFiles
@@ -287,6 +289,7 @@ def main():
 
         # Combine MCP + static file serving + health endpoint
         # lifespan must be passed through for FastMCP's session manager
+        # CORS middleware allows the sandboxed MCP App iframe to fetch audio files
         app = Starlette(
             routes=[
                 Route("/health", health),
@@ -294,6 +297,14 @@ def main():
                 Mount("/", app=mcp_app),
             ],
             lifespan=mcp_app.lifespan,
+            middleware=[
+                Middleware(
+                    CORSMiddleware,
+                    allow_origins=["*"],
+                    allow_methods=["GET"],
+                    allow_headers=["*"],
+                ),
+            ],
         )
 
         uvicorn.run(app, host=args.host, port=args.port)
