@@ -95,18 +95,23 @@ curl -X POST http://localhost:8000/v1/tts/clone \
 
 ## MCP Server
 
-The MCP server runs in Docker and proxies requests to the FastAPI backend, letting MCP clients (Claude Desktop, mcporter, etc.) generate speech via tool calls. Generated audio is served over HTTP — tools return a download URL rather than inline audio.
+The MCP server runs in Docker and proxies requests to the FastAPI backend, letting MCP clients (Claude Desktop, ChatGPT, etc.) generate speech via tool calls.
+
+Clients that support [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) get an **inline audio player** with playback controls (play/pause, seek, speed, volume) rendered directly in the conversation. Other clients receive a download URL for the generated WAV file.
 
 ### Architecture
 
 ```
-MCP Client (Claude Desktop, mcporter, etc.)
+MCP Client (Claude, ChatGPT, VS Code, etc.)
     ↓ streamable-http
 Docker Container (MCP Server :8080)
+    ├─ MCP tools (generate_speech, etc.)
+    ├─ ui:// resource (inline audio player)
+    └─ /files/ static serving (WAV downloads)
     ↓ HTTP → TTS_API_URL
 macOS Host (FastAPI server.py :8000)
     ↓ MLX inference on Metal GPU
-WAV audio returned as download URL
+WAV audio
 ```
 
 ### Quick Start
@@ -144,11 +149,12 @@ On Linux Docker (no `host.docker.internal`), set `TTS_API_URL` to the host's IP 
 | `health_check` | Check if TTS backend is reachable | Status dict |
 | `list_voices` | List preset and saved voices | `{preset: [...], saved: [...]}` |
 | `list_models` | List models and download status | `{models: [...]}` |
-| `generate_speech` | Generate with a preset voice | `{url, filename, voice, ...}` |
-| `design_voice_speech` | Generate with an AI-designed voice | `{url, filename, instruct, ...}` |
-| `clone_voice_speech` | Generate with a saved/cloned voice | `{url, filename, voice, ...}` |
+| `generate_speech` | Generate with a preset voice | `{url, filename, voice, ...}` + inline player |
+| `design_voice_speech` | Generate with an AI-designed voice | `{url, filename, instruct, ...}` + inline player |
+| `clone_voice_speech` | Generate with a saved/cloned voice | `{url, filename, voice, ...}` + inline player |
+| `get_audio_data` | Retrieve audio as base64 (used by the player UI) | `{audio_b64, mime_type, filename}` |
 
-Audio files are saved to `./outputs/` (bind-mounted) and served at `{PUBLIC_BASE_URL}/files/{filename}`.
+Audio tools render an inline player via [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) on supported clients. Files are also saved to `./outputs/` (bind-mounted) and served at `{PUBLIC_BASE_URL}/files/{filename}`.
 
 ### Building Locally
 
