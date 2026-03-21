@@ -9,8 +9,7 @@ A Gradio web app for [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) text-to-sp
 - **Voice cloning** - Clone voices from short reference audio clips (M4A, MP3, WAV)
 - **Model management** - Download and delete models from the UI
 - **Generation history** - 5 recent outputs with waveform playback, inline rename, and delete
-- **REST API** - FastAPI server for programmatic access
-- **MCP server** - Docker-based [MCP](https://modelcontextprotocol.io/) server for Claude Desktop and other MCP clients
+- **REST API** - Built-in FastAPI endpoints for programmatic access (same process as the UI)
 
 ## Requirements
 
@@ -28,25 +27,17 @@ uv sync
 
 ## Usage
 
-### Gradio UI
-
 ```bash
 uv run python app.py
-# Opens at http://127.0.0.1:7860
-```
-
-### API Server
-
-```bash
-uv run python server.py --port 8000
-# Docs at http://localhost:8000/docs
+# Gradio UI at http://127.0.0.1:7860
+# API docs at http://127.0.0.1:7860/docs
 ```
 
 Options:
 - `--host` - Bind address (default: `0.0.0.0`)
-- `--port` - Bind port (default: `8000`)
+- `--port` - Bind port (default: `7860`)
 
-On first use, go to the **Models** tab in the Gradio UI and download at least one model. The 1.7B-CustomVoice model is recommended for preset voices.
+On first use, go to the **Models** tab and download at least one model. The 1.7B-CustomVoice model is recommended for preset voices.
 
 ## API Endpoints
 
@@ -63,152 +54,34 @@ On first use, go to the **Models** tab in the Gradio UI and download at least on
 
 ```bash
 # Health check
-curl http://localhost:8000/v1/health
+curl http://localhost:7860/v1/health
 
 # List voices
-curl http://localhost:8000/v1/voices
+curl http://localhost:7860/v1/voices
 
 # Generate with preset voice
-curl -X POST http://localhost:8000/v1/tts/generate \
+curl -X POST http://localhost:7860/v1/tts/generate \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello world"}' \
   --output hello.wav
 
 # Generate with style instruction
-curl -X POST http://localhost:8000/v1/tts/generate \
+curl -X POST http://localhost:7860/v1/tts/generate \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello world", "voice": "Serena (warm, gentle)", "instruct": "speak with excitement", "temperature": 0.8}' \
   --output hello_excited.wav
 
 # Generate with voice design
-curl -X POST http://localhost:8000/v1/tts/design \
+curl -X POST http://localhost:7860/v1/tts/design \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello world", "instruct": "calm professional news anchor"}' \
   --output designed.wav
 
 # Generate with saved voice
-curl -X POST http://localhost:8000/v1/tts/clone \
+curl -X POST http://localhost:7860/v1/tts/clone \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello world", "voice": "my_saved_voice"}' \
   --output cloned.wav
-```
-
-## MCP Server
-
-The MCP server runs in Docker and proxies requests to the FastAPI backend, letting MCP clients (Claude Desktop, ChatGPT, etc.) generate speech via tool calls.
-
-Clients that support [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) get an **inline audio player** with playback controls (play/pause, seek, speed, volume) rendered directly in the conversation. Other clients receive a download URL for the generated WAV file.
-
-### Architecture
-
-```
-MCP Client (Claude, ChatGPT, VS Code, etc.)
-    ↓ streamable-http
-Docker Container (MCP Server :8080)
-    ├─ MCP tools (generate_speech, etc.)
-    ├─ ui:// resource (inline audio player)
-    └─ /files/ static serving (WAV downloads)
-    ↓ HTTP → TTS_API_URL
-macOS Host (FastAPI server.py :8000)
-    ↓ MLX inference on Metal GPU
-WAV audio
-```
-
-### Quick Start
-
-The MCP server requires the FastAPI backend to be running on the host.
-
-```bash
-# 1. Start the TTS backend
-uv run python server.py
-
-# 2. Start the MCP server
-docker compose up -d
-
-# 3. Verify
-curl http://localhost:8080/health
-```
-
-### Configuration
-
-Copy `.env.example` to `.env` and adjust:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TTS_API_URL` | `http://host.docker.internal:8000` | URL of the FastAPI TTS backend |
-| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base URL for audio download links |
-| `MCP_PORT` | `8080` | Host port mapped to the container |
-| `LOG_LEVEL` | `INFO` | Logging level |
-
-On Linux Docker (no `host.docker.internal`), set `TTS_API_URL` to the host's IP (e.g. `http://172.17.0.1:8000` or a Tailscale IP).
-
-### MCP Tools
-
-| Tool | Description | Returns |
-|------|-------------|---------|
-| `health_check` | Check if TTS backend is reachable | Status dict |
-| `list_voices` | List preset and saved voices | `{preset: [...], saved: [...]}` |
-| `list_models` | List models and download status | `{models: [...]}` |
-| `generate_speech` | Generate with a preset voice | `{url, filename, voice, ...}` + inline player |
-| `design_voice_speech` | Generate with an AI-designed voice | `{url, filename, instruct, ...}` + inline player |
-| `clone_voice_speech` | Generate with a saved/cloned voice | `{url, filename, voice, ...}` + inline player |
-| `get_audio_data` | Retrieve audio as base64 (used by the player UI) | `{audio_b64, mime_type, filename}` |
-
-Audio tools render an inline player via [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) on supported clients. Files are also saved to `./outputs/` (bind-mounted) and served at `{PUBLIC_BASE_URL}/files/{filename}`.
-
-### Building Locally
-
-```bash
-docker build -t ghcr.io/suckerfish/qwen3-tts-mcp:latest ./mcp
-```
-
-Pre-built multi-arch images (amd64 + arm64) are published to GHCR on every push to `master`.
-
-## Auto-start with launchd (macOS)
-
-Create `~/Library/LaunchAgents/com.qwen3tts.server.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.qwen3tts.server</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/YOUR_USERNAME/.local/bin/uv</string>
-        <string>run</string>
-        <string>python</string>
-        <string>server.py</string>
-        <string>--port</string>
-        <string>8000</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>/Users/YOUR_USERNAME/path/to/qwen3-tts-mlx</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/qwen3tts.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/qwen3tts.stderr.log</string>
-</dict>
-</plist>
-```
-
-Replace `YOUR_USERNAME` and the `WorkingDirectory` path, then:
-
-```bash
-# Load (start on boot)
-launchctl load ~/Library/LaunchAgents/com.qwen3tts.server.plist
-
-# Unload (stop auto-start)
-launchctl unload ~/Library/LaunchAgents/com.qwen3tts.server.plist
-
-# Check status
-launchctl list | grep qwen3tts
 ```
 
 ## Models

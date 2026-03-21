@@ -1,13 +1,17 @@
-"""Gradio web app for Qwen3-TTS on Apple Silicon."""
+"""Gradio web app + REST API for Qwen3-TTS on Apple Silicon."""
 
+import argparse
 import json
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
 from huggingface_hub import scan_cache_dir, snapshot_download
 import numpy as np
+from pydantic import BaseModel, Field
 
 from tts import (
     VOICES,
@@ -692,5 +696,95 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         js="() => confirm('Delete this model from cache? You will need to re-download it to use again.')",
     )
 
+# --- REST API (mounted on Gradio's FastAPI instance) ---
+
+class PresetRequest(BaseModel):
+    text: str
+    voice: str = VOICES[0]
+    instruct: str = ""
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
+    model: str = list(PRESET_MODELS.keys())[0]
+
+
+class DesignRequest(BaseModel):
+    text: str
+    instruct: str
+    language: str = "Auto"
+    temperature: float = Field(default=0.9, ge=0.0, le=2.0)
+
+
+class CloneRequest(BaseModel):
+    text: str
+    voice: str
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
+    model: str = list(CLONE_MODELS.keys())[0]
+
+
+fastapi_app = app.app
+
+
+@fastapi_app.get("/v1/health")
+def api_health():
+    return {"status": "ok"}
+
+
+@fastapi_app.get("/v1/voices")
+def api_list_voices():
+    preset = [v.split(" (")[0] for v in VOICES]
+    saved = list(load_saved_voices().keys())
+    return {"preset": preset, "saved": saved}
+
+
+@fastapi_app.get("/v1/models")
+def api_list_models():
+    return {"models": get_model_status()}
+
+
+@fastapi_app.post("/v1/tts/generate")
+def api_generate_preset(req: PresetRequest):
+    try:
+        _audio, metadata = generate_preset_audio(
+            text=req.text, voice=req.voice, instruct=req.instruct,
+            temperature=req.temperature, model_name=req.model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
+
+
+@fastapi_app.post("/v1/tts/design")
+def api_generate_design(req: DesignRequest):
+    try:
+        _audio, metadata = generate_design_audio(
+            text=req.text, instruct=req.instruct,
+            language=req.language, temperature=req.temperature,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
+
+
+@fastapi_app.post("/v1/tts/clone")
+def api_generate_clone(req: CloneRequest):
+    try:
+        _audio, metadata = generate_clone_audio(
+            text=req.text, saved_voice=req.voice,
+            temperature=req.temperature, model_name=req.model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
+
+
 if __name__ == "__main__":
-    app.launch(css=CSS)
+    parser = argparse.ArgumentParser(description="Qwen3-TTS")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=7860, help="Bind port (default: 7860)")
+    args = parser.parse_args()
+    app.launch(server_name=args.host, server_port=args.port, inbrowser=True)
