@@ -1,5 +1,6 @@
 """Shared TTS generation logic for Qwen3-TTS."""
 
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -44,16 +45,24 @@ SAVED_VOICES_DIR = Path("saved_voices")
 OUTPUTS_DIR.mkdir(exist_ok=True)
 SAVED_VOICES_DIR.mkdir(exist_ok=True)
 
-_models: dict = {}
-_model_lock = threading.Lock()
+# One model resident at a time; the lock also serializes generation so
+# concurrent Gradio/API requests never run inference on the same model.
+_loaded_model = None
+_loaded_model_path: str | None = None
+_lock = threading.Lock()
 
 
 def get_model(model_path: str):
-    """Lazy load models with thread safety."""
-    with _model_lock:
-        if model_path not in _models:
-            _models[model_path] = load_model(model_path)
-        return _models[model_path]
+    """Return the resident model, swapping out any other. Caller must hold _lock."""
+    global _loaded_model, _loaded_model_path
+    if _loaded_model_path != model_path:
+        if _loaded_model is not None:
+            _loaded_model = None
+            _loaded_model_path = None
+            mx.clear_cache()
+        _loaded_model = load_model(model_path)
+        _loaded_model_path = model_path
+    return _loaded_model
 
 
 def get_cached_models() -> dict[str, tuple[bool, int]]:
@@ -67,8 +76,9 @@ def get_cached_models() -> dict[str, tuple[bool, int]]:
 
 def is_model_downloaded(repo_id: str) -> bool:
     """Check if a specific model is in cache."""
-    cached = get_cached_models()
-    return repo_id in cached
+    if repo_id == _loaded_model_path:
+        return True
+    return repo_id in get_cached_models()
 
 
 def get_model_status() -> list[dict]:
@@ -96,7 +106,6 @@ def load_saved_voices() -> dict:
             metadata_path = voice_dir / "metadata.json"
             audio_files = list(voice_dir.glob("audio.*"))
             if audio_files and transcript_path.exists():
-                import json
                 voices[voice_dir.name] = {
                     "audio": str(audio_files[0]),
                     "transcript": transcript_path.read_text().strip(),
@@ -155,17 +164,20 @@ def generate_preset_audio(
     if not is_model_downloaded(model_path):
         raise RuntimeError(f"Model not downloaded: '{model_name}'")
 
-    temp = validate_temperature(temperature)
-    model = get_model(model_path)
-
     voice_name = voice.split(" (")[0]
+    if voice_name not in {v.split(" (")[0] for v in VOICES}:
+        raise ValueError(f"Unknown voice: '{voice}'")
 
-    results = list(model.generate(
-        text=text,
-        voice=voice_name,
-        instruct=instruct.strip() or None,
-        temperature=temp,
-    ))
+    temp = validate_temperature(temperature)
+
+    with _lock:
+        model = get_model(model_path)
+        results = list(model.generate(
+            text=text,
+            voice=voice_name,
+            instruct=instruct.strip() or None,
+            temperature=temp,
+        ))
 
     if not results:
         raise RuntimeError("Generation failed - no audio produced")
@@ -196,14 +208,15 @@ def generate_design_audio(
         raise RuntimeError("Model not downloaded: '1.7B-VoiceDesign'")
 
     temp = validate_temperature(temperature)
-    model = get_model(model_path)
 
-    results = list(model.generate(
-        text=text,
-        instruct=instruct.strip(),
-        lang_code=language.lower(),
-        temperature=temp,
-    ))
+    with _lock:
+        model = get_model(model_path)
+        results = list(model.generate(
+            text=text,
+            instruct=instruct.strip(),
+            lang_code=language.lower(),
+            temperature=temp,
+        ))
 
     if not results:
         raise RuntimeError("Generation failed - no audio produced")
@@ -244,17 +257,18 @@ def generate_clone_audio(
     actual_text = voice_data["transcript"]
 
     temp = validate_temperature(temperature)
-    model = get_model(model_path)
 
     audio_np, _ = librosa.load(actual_audio, sr=24000, mono=True)
     audio_mx = mx.array(audio_np)
 
-    results = list(model.generate(
-        text=text,
-        ref_audio=audio_mx,
-        ref_text=actual_text,
-        temperature=temp,
-    ))
+    with _lock:
+        model = get_model(model_path)
+        results = list(model.generate(
+            text=text,
+            ref_audio=audio_mx,
+            ref_text=actual_text,
+            temperature=temp,
+        ))
 
     if not results:
         raise RuntimeError("Generation failed - no audio produced")

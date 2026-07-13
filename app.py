@@ -10,7 +10,6 @@ import gradio as gr
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from huggingface_hub import scan_cache_dir, snapshot_download
-import numpy as np
 from pydantic import BaseModel, Field
 
 from tts import (
@@ -20,15 +19,12 @@ from tts import (
     DESIGN_MODELS,
     CLONE_MODELS,
     LANGUAGES,
-    OUTPUTS_DIR,
     SAVED_VOICES_DIR,
     get_model_status,
-    is_model_downloaded,
     load_saved_voices,
     generate_preset_audio,
     generate_design_audio,
     generate_clone_audio,
-    save_generation,
 )
 
 INSTRUCT_PRESETS = [
@@ -46,9 +42,8 @@ VOICE_DESIGN_PRESETS = [
 ]
 
 
-def download_model(repo_id: str, progress=gr.Progress()) -> str:
-    """Download model with Gradio progress tracking."""
-    progress(0, desc="Starting download...")
+def download_model(repo_id: str) -> str:
+    """Download model weights into the HuggingFace cache."""
     snapshot_download(repo_id, allow_patterns=["*.json", "*.safetensors", "*.py", "*.txt", "*.tiktoken"])
     return f"Downloaded {repo_id}"
 
@@ -169,14 +164,9 @@ def delete_generation(history: list, index: int, delete_file: bool) -> list:
 
 
 def generate_preset(
-    text: str, voice: str, instruct: str, temp_str: str, model_name: str, history: list
+    text: str, voice: str, instruct: str, temp: float, model_name: str, history: list
 ) -> tuple:
     """Generate audio using preset voice (Gradio wrapper)."""
-    try:
-        temp = float(temp_str)
-    except ValueError:
-        raise gr.Error("Temperature must be a number")
-
     try:
         _audio, metadata = generate_preset_audio(text, voice, instruct, temp, model_name)
     except (ValueError, RuntimeError) as e:
@@ -187,14 +177,9 @@ def generate_preset(
 
 
 def generate_design(
-    text: str, instruct: str, language: str, temp_str: str, history: list
+    text: str, instruct: str, language: str, temp: float, history: list
 ) -> tuple:
     """Generate audio using VoiceDesign model (Gradio wrapper)."""
-    try:
-        temp = float(temp_str)
-    except ValueError:
-        raise gr.Error("Temperature must be a number")
-
     try:
         _audio, metadata = generate_design_audio(text, instruct, language, temp)
     except (ValueError, RuntimeError) as e:
@@ -207,16 +192,11 @@ def generate_design(
 def generate_clone(
     text: str,
     saved_voice: str,
-    temp_str: str,
+    temp: float,
     model_name: str,
     history: list,
 ) -> tuple:
     """Generate audio using voice cloning (Gradio wrapper)."""
-    try:
-        temp = float(temp_str)
-    except ValueError:
-        raise gr.Error("Temperature must be a number")
-
     try:
         _audio, metadata = generate_clone_audio(text, saved_voice, temp, model_name)
     except (ValueError, RuntimeError) as e:
@@ -294,6 +274,9 @@ CSS = """
 
 with gr.Blocks(title="Qwen3-TTS") as app:
     history_state = gr.State([])
+    # Last Voice Design generation (path + inputs at generation time), so
+    # "Save as Voice" never grabs audio produced by another tab.
+    design_last_state = gr.State(None)
 
     gr.Markdown("# Qwen3-TTS")
 
@@ -339,10 +322,12 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                     for btn, preset in zip(preset_btns, INSTRUCT_PRESETS):
                         btn.click(fn=lambda p=preset: p, outputs=preset_instruct)
 
-                    preset_temp = gr.Textbox(
-                        label="Temperature (0.0 - 2.0)",
-                        value="1.0",
-                        elem_classes=["compact-input"],
+                    preset_temp = gr.Slider(
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=1.0,
+                        step=0.05,
+                        label="Temperature",
                     )
 
                     preset_btn = gr.Button("Generate", variant="primary", elem_classes=["generate-btn"])
@@ -379,10 +364,12 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                         label="Language",
                     )
 
-                    design_temp = gr.Textbox(
-                        label="Temperature (0.0 - 2.0)",
-                        value="0.9",
-                        elem_classes=["compact-input"],
+                    design_temp = gr.Slider(
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=0.9,
+                        step=0.05,
+                        label="Temperature",
                     )
 
                     design_btn = gr.Button("Generate", variant="primary", elem_classes=["generate-btn"])
@@ -438,10 +425,12 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                         label="Model",
                     )
 
-                    clone_temp = gr.Textbox(
-                        label="Temperature (0.0 - 2.0)",
-                        value="1.0",
-                        elem_classes=["compact-input"],
+                    clone_temp = gr.Slider(
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=1.0,
+                        step=0.05,
+                        label="Temperature",
                     )
 
                     clone_btn = gr.Button("Generate", variant="primary", elem_classes=["generate-btn"])
@@ -459,7 +448,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
                     refresh_btn = gr.Button("Refresh Status", variant="primary")
 
-                    with gr.Row(visible=False) as model_actions_row:
+                    with gr.Row():
                         model_selector = gr.Dropdown(
                             choices=list(ALL_MODELS.keys()),
                             label="Select Model",
@@ -530,8 +519,10 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
     def do_generate_design(text, instruct, language, temp, history):
         path, new_history = generate_design(text, instruct, language, temp, history)
+        design_last = {"path": path, "text": text, "instruct": instruct}
         return [
             new_history,
+            design_last,
             gr.update(visible=True),
             gr.update(value=new_history[0]["filename"]),
             gr.update(value=path, label=build_metadata_str(new_history[0])),
@@ -561,11 +552,13 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         gr.Info(f"Voice '{safe_name}' saved")
         return gr.update(choices=new_choices, value=safe_name)
 
-    def do_save_designed_voice(history, text, instruct, name):
-        if not history:
-            raise gr.Error("Please generate audio first")
-        audio_path = history[0]["path"]
-        safe_name = save_designed_voice(audio_path, text, instruct, name)
+    def do_save_designed_voice(design_last, name):
+        if not design_last:
+            raise gr.Error("Please generate audio in the Voice Design tab first")
+        audio_path = design_last["path"]
+        if not Path(audio_path).exists():
+            raise gr.Error("The designed audio file no longer exists. Generate again.")
+        safe_name = save_designed_voice(audio_path, design_last["text"], design_last["instruct"], name)
         new_choices = get_saved_voice_choices()
         gr.Info(f"Voice '{safe_name}' saved")
         return gr.update(choices=new_choices, value=safe_name)
@@ -613,7 +606,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
     ).then(
         fn=do_generate_design,
         inputs=[design_text, design_instruct, design_language, design_temp, history_state],
-        outputs=[history_state] + slot0_outputs,
+        outputs=[history_state, design_last_state] + slot0_outputs,
     ).then(
         fn=None,
         js=reset_audio_js,
@@ -652,7 +645,7 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
     design_save_btn.click(
         fn=do_save_designed_voice,
-        inputs=[history_state, design_text, design_instruct, design_save_name],
+        inputs=[design_last_state, design_save_name],
         outputs=[saved_voice_dropdown],
     )
 
@@ -668,22 +661,20 @@ with gr.Blocks(title="Qwen3-TTS") as app:
 
     def do_download_model(model_name):
         if not model_name:
-            return "Please select a model", refresh_model_status()
+            return gr.update(value="Please select a model", visible=True), refresh_model_status()
         repo_id = ALL_MODELS[model_name]
         result = download_model(repo_id)
-        return result, refresh_model_status()
+        return gr.update(value=result, visible=True), refresh_model_status()
 
     def do_delete_model(model_name):
         if not model_name:
-            return "Please select a model", refresh_model_status()
+            return gr.update(value="Please select a model", visible=True), refresh_model_status()
         repo_id = ALL_MODELS[model_name]
         result = delete_model(repo_id)
-        return result, refresh_model_status()
+        return gr.update(value=result, visible=True), refresh_model_status()
 
-    def refresh_and_show():
-        return refresh_model_status(), gr.update(visible=True), gr.update(visible=True)
-
-    refresh_btn.click(fn=refresh_and_show, outputs=[model_status_display, model_actions_row, model_output])
+    refresh_btn.click(fn=refresh_model_status, outputs=[model_status_display])
+    app.load(fn=refresh_model_status, outputs=[model_status_display])
     download_btn.click(
         fn=do_download_model,
         inputs=[model_selector],
@@ -696,7 +687,9 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         js="() => confirm('Delete this model from cache? You will need to re-download it to use again.')",
     )
 
-# --- REST API (mounted on Gradio's FastAPI instance) ---
+# --- REST API (registered on Gradio's FastAPI instance) ---
+# launch() replaces app.app with a fresh FastAPI instance, so routes must be
+# registered after launch — see register_api() call in __main__.
 
 class PresetRequest(BaseModel):
     text: str
@@ -720,66 +713,61 @@ class CloneRequest(BaseModel):
     model: str = list(CLONE_MODELS.keys())[0]
 
 
-fastapi_app = app.app
+def register_api(fastapi_app):
+    """Register the /v1/* REST routes on the served FastAPI instance."""
 
+    @fastapi_app.get("/v1/health")
+    def api_health():
+        return {"status": "ok"}
 
-@fastapi_app.get("/v1/health")
-def api_health():
-    return {"status": "ok"}
+    @fastapi_app.get("/v1/voices")
+    def api_list_voices():
+        preset = [v.split(" (")[0] for v in VOICES]
+        saved = list(load_saved_voices().keys())
+        return {"preset": preset, "saved": saved}
 
+    @fastapi_app.get("/v1/models")
+    def api_list_models():
+        return {"models": get_model_status()}
 
-@fastapi_app.get("/v1/voices")
-def api_list_voices():
-    preset = [v.split(" (")[0] for v in VOICES]
-    saved = list(load_saved_voices().keys())
-    return {"preset": preset, "saved": saved}
+    @fastapi_app.post("/v1/tts/generate")
+    def api_generate_preset(req: PresetRequest):
+        try:
+            _audio, metadata = generate_preset_audio(
+                text=req.text, voice=req.voice, instruct=req.instruct,
+                temperature=req.temperature, model_name=req.model,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
 
+    @fastapi_app.post("/v1/tts/design")
+    def api_generate_design(req: DesignRequest):
+        try:
+            _audio, metadata = generate_design_audio(
+                text=req.text, instruct=req.instruct,
+                language=req.language, temperature=req.temperature,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
 
-@fastapi_app.get("/v1/models")
-def api_list_models():
-    return {"models": get_model_status()}
-
-
-@fastapi_app.post("/v1/tts/generate")
-def api_generate_preset(req: PresetRequest):
-    try:
-        _audio, metadata = generate_preset_audio(
-            text=req.text, voice=req.voice, instruct=req.instruct,
-            temperature=req.temperature, model_name=req.model,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
-
-
-@fastapi_app.post("/v1/tts/design")
-def api_generate_design(req: DesignRequest):
-    try:
-        _audio, metadata = generate_design_audio(
-            text=req.text, instruct=req.instruct,
-            language=req.language, temperature=req.temperature,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
-
-
-@fastapi_app.post("/v1/tts/clone")
-def api_generate_clone(req: CloneRequest):
-    try:
-        _audio, metadata = generate_clone_audio(
-            text=req.text, saved_voice=req.voice,
-            temperature=req.temperature, model_name=req.model,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
+    @fastapi_app.post("/v1/tts/clone")
+    def api_generate_clone(req: CloneRequest):
+        try:
+            _audio, metadata = generate_clone_audio(
+                text=req.text, saved_voice=req.voice,
+                temperature=req.temperature, model_name=req.model,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        return FileResponse(metadata["path"], media_type="audio/wav", filename=metadata["filename"])
 
 
 if __name__ == "__main__":
@@ -787,4 +775,6 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=7860, help="Bind port (default: 7860)")
     args = parser.parse_args()
-    app.launch(server_name=args.host, server_port=args.port, inbrowser=True)
+    app.launch(server_name=args.host, server_port=args.port, inbrowser=True, prevent_thread_lock=True)
+    register_api(app.app)
+    app.block_thread()
