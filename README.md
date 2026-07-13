@@ -95,6 +95,8 @@ curl -X POST http://localhost:7860/v1/tts/clone \
 
 Models are downloaded to `~/.cache/huggingface/hub/` and can be managed from the Models tab.
 
+Only one model is kept in memory at a time (~4.5 GB for the 1.7B models). Switching between features that use different models unloads the current one and loads the new one, which takes a few seconds. Generation requests are serialized — concurrent UI/API requests queue rather than running simultaneously.
+
 ## Available Voices
 
 | Voice | Description | Best For |
